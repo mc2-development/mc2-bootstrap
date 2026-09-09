@@ -10,7 +10,7 @@ GITHUB_OWNER="${GITHUB_OWNER:-mc2-development}"
 
 WORK_DIR="$HOME/Work"
 MC2_DIR="$WORK_DIR/mc2"
-REPOS=(mc2-wrappers mc2-k8s mc2-configs mc2-cors mc2-operation-api mc2-accounting-api mc2-agent-api mc2-quotance-frontend)
+REPOS=(mc2-wrappers mc2-k8s mc2-configs mc2-cors mc2-operation-api mc2-accounting-api mc2-agent-api mc2-quotance-frontend mc2-ui)
 
 # Default filename — ssh tries this automatically with no ~/.ssh/config needed,
 # as long as it's the only key on the machine.
