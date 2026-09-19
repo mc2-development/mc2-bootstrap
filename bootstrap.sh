@@ -31,7 +31,7 @@ GITHUB_OWNER="${GITHUB_OWNER:-mc2-development}"
 
 WORK_DIR="$HOME/Work"
 MC2_DIR="$WORK_DIR/mc2"
-REPOS=(mc2-wrappers mc2-k8s mc2-configs mc2-cors mc2-operation-api mc2-accounting-api mc2-agent-api mc2-quotance-frontend mc2-ui)
+REPOS=(mc2-wrappers mc2-k8s mc2-configs mc2-cors mc2-gateway mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-quotance-frontend mc2-ui)
 
 # Default filename — ssh tries this automatically with no ~/.ssh/config needed,
 # as long as it's the only key on the machine.
@@ -51,6 +51,15 @@ SERVER_PASSPHRASE_SHA256="89ebdddcca59dd2c9bc8053fe2bd310477ada95758baa3b3d56420
 
 KUBECONFIG_OUT="/root/mc2-hetzner.kubeconfig"
 KUBE_CONTEXT_NAME="mc2-hetzner"
+
+# Pinned so a rebuild, or a second node added months from now, reproduces THIS
+# cluster rather than whatever "stable" happens to point at that day. Unpinned,
+# the install line is a moving target and two nodes can end up on different
+# minor versions.
+#
+# Update path: check the channel list, bump, re-provision a throwaway box, test.
+#     curl -s https://update.k3s.io/v1-release/channels | grep -o 'v1[^"]*k3s1' | head
+K3S_VERSION="v1.36.4+k3s1"
 
 MODE="member"
 IP_OVERRIDE=""
@@ -94,8 +103,11 @@ run_with_spinner() {
     i=$(( (i + 1) % ${#frames} ))
     sleep 0.1
   done
-  wait "$pid"
-  local status=$?
+  # `wait` under `set -e` would abort the script on a non-zero child before the
+  # failure branch below could run — so the log would never be printed and the
+  # temp file would leak. Capture the status instead of letting errexit have it.
+  local status=0
+  wait "$pid" || status=$?
   if [[ $status -eq 0 ]]; then
     printf "\r      ✓ %s\n" "$msg"
   else
@@ -228,13 +240,6 @@ run_server_bootstrap() {
   fi
 
   # --- guard 2: passphrase -----------------------------------------------------
-  if [[ "$SERVER_PASSPHRASE_SHA256" == "REPLACE_WITH_SHA256" ]]; then
-    echo "Refusing: no server passphrase has been set in this script."
-    echo "Set SERVER_PASSPHRASE_SHA256 to the output of:"
-    echo "    printf '%s' 'your passphrase' | shasum -a 256"
-    exit 1
-  fi
-
   local supplied
   if [[ -n "${MC2_SERVER_PASSPHRASE:-}" ]]; then
     supplied="$MC2_SERVER_PASSPHRASE"
@@ -352,8 +357,9 @@ run_server_bootstrap() {
     #
     # Traefik and servicelb are deliberately NOT disabled: Traefik is the ingress
     # we want, and klipper (servicelb) is what gives it an address on a single node.
-    run_with_spinner "curl get.k3s.io | sh" \
-      env INSTALL_K3S_EXEC="--tls-san $public_ip --secrets-encryption" \
+    run_with_spinner "curl get.k3s.io | sh ($K3S_VERSION)" \
+      env INSTALL_K3S_VERSION="$K3S_VERSION" \
+          INSTALL_K3S_EXEC="--tls-san $public_ip --secrets-encryption" \
       bash -c 'curl -sfL https://get.k3s.io | sh -'
 
     run_with_spinner "waiting for the node to become Ready" \
@@ -365,10 +371,12 @@ run_server_bootstrap() {
   fi
   echo ""
 
-  # --- [3/3] kubeconfig --------------------------------------------------------
   # Confirm at-rest encryption actually came up, rather than assuming the flag took.
-  if k3s secrets-encrypt status 2>/dev/null | grep -qi "enabled"; then
-    echo "      ✓ secrets encrypted at rest ($(k3s secrets-encrypt status 2>/dev/null | grep -i 'current key type' | head -1 | sed 's/.*: *//'))"
+  # Absolute path on purpose: /usr/local/bin is not always on root's PATH in a
+  # non-login shell, and a swallowed command-not-found here would report a false
+  # negative on a cluster that is in fact encrypted.
+  if /usr/local/bin/k3s secrets-encrypt status 2>/dev/null | grep -qi "enabled"; then
+    echo "      ✓ secrets encrypted at rest"
   else
     echo "      ! secrets-at-rest encryption is NOT active. Check: k3s secrets-encrypt status"
     echo "        If k3s pre-dated this script, enabling it needs a restart:"
@@ -376,6 +384,7 @@ run_server_bootstrap() {
   fi
   echo ""
 
+  # --- [3/3] kubeconfig --------------------------------------------------------
   echo "[3/3] Writing a remote-ready kubeconfig"
   # k3s names the cluster, context and user all "default". Renaming matters: a Mac
   # is likely to already hold other kubeconfigs using that same name, and picking
@@ -544,6 +553,13 @@ run_member_bootstrap() {
     : # already in place
   elif [[ -d "$MC2_DIR/mc2-bootstrap" ]]; then
     echo "Note: $MC2_DIR/mc2-bootstrap already exists — leaving $SCRIPT_DIR where it is."
+  elif [[ "$(basename "$SCRIPT_DIR")" != "mc2-bootstrap" || ! -d "$SCRIPT_DIR/.git" ]]; then
+    # The whole premise of this script is that it gets copied around on its own,
+    # so $SCRIPT_DIR is often just whatever directory it was dropped in — /tmp,
+    # ~/Downloads. Moving THAT would drag every unrelated file with it.
+    echo "Note: $SCRIPT_DIR is not an mc2-bootstrap checkout — leaving it where it is."
+    echo "      Clone it properly if you want it alongside the other repos:"
+    echo "        git clone git@github.com:${GITHUB_OWNER}/mc2-bootstrap.git $MC2_DIR/mc2-bootstrap"
   else
     mv "$SCRIPT_DIR" "$MC2_DIR/mc2-bootstrap"
     echo "✓ Moved mc2-bootstrap into $MC2_DIR/mc2-bootstrap, alongside the other repos"
