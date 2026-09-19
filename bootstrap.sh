@@ -47,7 +47,7 @@ SSH_KEY="$HOME/.ssh/id_ed25519"
 # mistake on a machine that should have been --member.
 #
 # To change it:  printf '%s' 'your passphrase' | shasum -a 256
-SERVER_PASSPHRASE_SHA256="89ebdddcca59dd2c9bc8053fe2bd310477ada95758baa3b3d564200a4dbcf849"
+SERVER_PASSPHRASE_SHA256="61c41eff37596494eb833b148164f5e297c10c5b02ca33d57fe2f34fc1dd97c3"
 
 KUBECONFIG_OUT="/root/mc2-hetzner.kubeconfig"
 KUBE_CONTEXT_NAME="mc2-hetzner"
@@ -426,15 +426,16 @@ run_server_bootstrap() {
   echo ""
   echo "2. Lock the firewall down (Hetzner Cloud Console → Firewalls, or hcloud):"
   echo ""
-  echo "     allow  22/tcp    from YOUR IP only     (ssh)"
-  echo "     allow  6443/tcp  from YOUR IP only     (kubernetes api)"
-  echo "     allow  80/tcp    from anywhere         (traefik)"
-  echo "     allow  443/tcp   from anywhere         (traefik)"
-  echo "     deny   everything else"
+  echo "     NO inbound rules at all. Create the firewall empty and ATTACH it to"
+  echo "     the server — an unattached firewall filters nothing."
   echo ""
-  echo "   Postgres (5432) is never exposed — it stays a ClusterIP service and is"
-  echo "   reached with 'kubectl port-forward'. If 5432 is open to the internet,"
-  echo "   something is wrong."
+  echo "   Nothing needs to be open: ssh, the kubernetes API and (later) https all"
+  echo "   ride the tailscale tunnel, which is outbound-only. A port scan of the"
+  echo "   public IP should find nothing. Certificates come from cert-manager over"
+  echo "   dns01, so not even :80 is needed for ACME."
+  echo ""
+  echo "   Postgres (5432) is never exposed either — it stays a ClusterIP service"
+  echo "   reached with 'kubectl port-forward' over the tunnel."
   echo ""
 }
 
