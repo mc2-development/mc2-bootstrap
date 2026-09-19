@@ -357,9 +357,22 @@ run_server_bootstrap() {
     #
     # Traefik and servicelb are deliberately NOT disabled: Traefik is the ingress
     # we want, and klipper (servicelb) is what gives it an address on a single node.
+    #
+    # If Tailscale is up, its address goes into the certificate too: with the
+    # firewall fully closed, kubectl reaches the API server over the tunnel, and
+    # a SAN can only be added later by editing k3s config and restarting.
+    tls_sans="--tls-san $public_ip"
+    ts_ip="$(command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -1 || true)"
+    if [[ -n "$ts_ip" ]]; then
+      echo "      ✓ tailscale detected ($ts_ip) — adding it to the API certificate"
+      tls_sans+=" --tls-san $ts_ip"
+    else
+      echo "      ! no tailscale interface — the API certificate will only cover $public_ip."
+      echo "        For VPN-only kubectl access, install tailscale first: see NEXT STEPS."
+    fi
     run_with_spinner "curl get.k3s.io | sh ($K3S_VERSION)" \
       env INSTALL_K3S_VERSION="$K3S_VERSION" \
-          INSTALL_K3S_EXEC="--tls-san $public_ip --secrets-encryption" \
+          INSTALL_K3S_EXEC="$tls_sans --secrets-encryption" \
       bash -c 'curl -sfL https://get.k3s.io | sh -'
 
     run_with_spinner "waiting for the node to become Ready" \
@@ -389,7 +402,10 @@ run_server_bootstrap() {
   # k3s names the cluster, context and user all "default". Renaming matters: a Mac
   # is likely to already hold other kubeconfigs using that same name, and picking
   # the wrong "default" is how you deploy to the wrong cluster.
-  sed -e "s|https://127.0.0.1:6443|https://${public_ip}:6443|" \
+  # Prefer the tailscale address: with the firewall fully closed, the tunnel is
+  # the only route that reaches 6443 at all.
+  kube_addr="${ts_ip:-$public_ip}"
+  sed -e "s|https://127.0.0.1:6443|https://${kube_addr}:6443|" \
       -e "s|name: default|name: ${KUBE_CONTEXT_NAME}|g" \
       -e "s|cluster: default|cluster: ${KUBE_CONTEXT_NAME}|g" \
       -e "s|user: default|user: ${KUBE_CONTEXT_NAME}|g" \
