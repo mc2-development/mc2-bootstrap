@@ -535,10 +535,38 @@ run_member_bootstrap() {
   echo "      ✓ SSH access confirmed"
   echo ""
 
-  echo "[3/4] Choose repositories to clone (↑/↓ move, space toggle, enter confirm)"
+  # A role preset, because "which of these sixteen repos do I need?" is a question a
+  # new developer cannot answer on their first day — and the answer decides how much
+  # setup they face afterwards. A frontend checkout holds nothing that reads a secret,
+  # so virtualize asks it for no credentials at all.
+  echo "[3/4] What will you be working on?"
   echo ""
-  checkbox_menu "${REPOS[@]}"
-  REPOS=("${CHECKED_ITEMS[@]}")
+  echo "  1) Frontend   — the three apps and the shared UI layer. No backend, no database."
+  echo "  2) Backend    — the APIs, the gateway, migrations and the shared Python library."
+  echo "  3) Everything — the whole platform."
+  echo "  4) Choose repositories myself"
+  echo ""
+  read -rp "  Select [1-4]: " _role
+  echo ""
+
+  BASE_REPOS=(mc2-wrappers mc2-k8s mc2-configs)
+  FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
+  BACKEND_REPOS=(mc2-core mc2-python mc2-gateway mc2-account-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons mc2-mailer-api)
+
+  ROLE="everything"
+  case "$_role" in
+    1) ROLE="frontend"; REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}") ;;
+    2) ROLE="backend";  REPOS=("${BASE_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
+    3) REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
+    4) echo "  (↑/↓ move, space toggle, enter confirm)"
+       echo ""
+       checkbox_menu "${REPOS[@]}"
+       REPOS=("${CHECKED_ITEMS[@]}")
+       ROLE="custom" ;;
+    *) echo "  Unrecognised choice — cloning everything."
+       REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
+  esac
+  echo "  Selected: $ROLE (${#REPOS[@]} repositories)"
   echo ""
 
   mkdir -p "$MC2_DIR"
@@ -584,12 +612,32 @@ run_member_bootstrap() {
   echo ""
 
   echo "--------------------"
-  echo "You're set up. A few manual steps left to bring the cluster up:"
-  echo ""
-  echo "  cd $MC2_DIR"
-  echo "  kube --install-traefik   # one-time"
-  echo "  kube --reboot"
-  echo "  virtualize --setup       # generates your configs, then venvs + IDE + forwards"
+  if [[ "$ROLE" == "frontend" ]]; then
+    # No local cluster in this path on purpose: the dev tier's APIs are deployed, so
+    # a frontend developer needs an app and a network, not Kubernetes on their Mac.
+    echo "You're set up. Two commands and you're running:"
+    echo ""
+    echo "  cd $MC2_DIR"
+    echo "  virtualize --setup -e dev                       # installs deps, writes dev configs"
+    echo "  virtualize -p mc2-platform-frontend --start     # :3001"
+    echo ""
+    echo "Reaching *-dev.mc2-dev.com needs Tailscale — ask to be added to the network."
+    echo "Move one app to another tier with 'virtualize -p <project> --switch-dev' (or"
+    echo "--switch-local / --switch-prod); 'virtualize --envs' shows where each one points."
+  else
+    echo "You're set up. A few manual steps left to bring the cluster up:"
+    echo ""
+    echo "  cd $MC2_DIR"
+    echo "  kube --install-traefik   # one-time"
+    echo "  kube --reboot"
+    echo "  virtualize --setup       # generates your configs, then venvs + IDE + forwards"
+    echo ""
+    echo "To work against the dev cluster instead of your own, take its credentials"
+    echo "from the cluster rather than from anyone's keyboard:"
+    echo ""
+    echo "  virtualize --pull-configs -e dev"
+    echo "  virtualize --setup -e dev"
+  fi
 }
 
 case "$MODE" in
