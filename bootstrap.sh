@@ -123,6 +123,16 @@ run_with_spinner() {
 # Items already present in $MC2_DIR show dimmed/locked — skipped by navigation,
 # always included in the result. Space toggles, enter confirms.
 # Result left in $CHECKED_ITEMS array.
+# Repos that exist in the org but hold nothing yet. Shown, selectable, but never
+# checked by default — cloning one gets you an empty directory, and finding that out
+# afterwards is the kind of small confusion a first day does not need.
+repo_note() {
+  case "$1" in
+    mc2-mailer-api) echo " — placeholder, not started" ;;
+    *) echo "" ;;
+  esac
+}
+
 checkbox_menu() {
   set +e
   local items=("$@")
@@ -131,7 +141,7 @@ checkbox_menu() {
   local i cur key key2
 
   for ((i = 0; i < n; i++)); do
-    checked[i]=1
+    if [[ -n "$(repo_note "${items[i]}")" ]]; then checked[i]=0; else checked[i]=1; fi
     if [[ -d "$MC2_DIR/${items[i]}" ]]; then locked[i]=1; else locked[i]=0; fi
   done
 
@@ -148,10 +158,11 @@ checkbox_menu() {
       fi
       local mark=" "
       [[ ${checked[i]} -eq 1 ]] && mark="x"
+      local note; note="$(repo_note "${items[i]}")"
       if [[ $i -eq $cur ]]; then
-        printf "\r\033[K  > [%s] %s\n" "$mark" "${items[i]}"
+        printf "\r\033[K  > [%s] %s\033[2m%s\033[0m\n" "$mark" "${items[i]}" "$note"
       else
-        printf "\r\033[K    [%s] %s\n" "$mark" "${items[i]}"
+        printf "\r\033[K    [%s] %s\033[2m%s\033[0m\n" "$mark" "${items[i]}" "$note"
       fi
     done
   }
@@ -451,10 +462,64 @@ run_member_bootstrap() {
 
   banner "Local dev bootstrap"
 
-  echo "[1/4] Checking prerequisites"
+  # A role preset, because "which of these sixteen repos do I need?" is a question a
+  # new developer cannot answer on their first day — and the answer decides how much
+  # setup they face afterwards. A frontend checkout holds nothing that reads a secret,
+  # so virtualize asks it for no credentials at all.
+  #
+  # Asked first, before prerequisites, because the answer decides which toolchains are
+  # needed: there is no reason to make a frontend developer install helm.
+  echo "[1/5] What will you be working on?"
+  echo ""
+  echo "  1) Frontend   — the three apps and the shared UI layer. No backend, no database."
+  echo "  2) Backend    — the APIs, the gateway, migrations and the shared Python library."
+  echo "  3) Everything — the whole platform."
+  echo "  4) Choose repositories myself"
+  echo ""
+  read -rp "  Select [1-4]: " _role
+  echo ""
+
+  BASE_REPOS=(mc2-wrappers mc2-k8s mc2-configs)
+  FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
+  # mc2-mailer-api is deliberately absent: it is an empty repo until the core platform
+  # is stable (its own README says so). Still reachable through "choose myself".
+  BACKEND_REPOS=(mc2-core mc2-python mc2-gateway mc2-account-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
+
+  ROLE="everything"
+  case "$_role" in
+    1) ROLE="frontend"; REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}") ;;
+    2) ROLE="backend";  REPOS=("${BASE_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
+    3) REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
+    4) echo "  (↑/↓ move, space toggle, enter confirm)"
+       echo ""
+       checkbox_menu "${REPOS[@]}"
+       REPOS=("${CHECKED_ITEMS[@]}")
+       ROLE="custom" ;;
+    *) echo "  Unrecognised choice — cloning everything."
+       REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
+  esac
+  echo "  Selected: $ROLE (${#REPOS[@]} repositories)"
+  echo ""
+
+  # Which toolchains the selection actually needs. Derived from the repos rather than
+  # the role label, so "choose myself" gets the same treatment as a preset.
+  NEEDS_PYTHON=false; NEEDS_RUST=false; NEEDS_NODE=false
+  for repo in "${REPOS[@]}"; do
+    case "$repo" in
+      mc2-operation-api|mc2-accounting-api|mc2-agent-api|mc2-crons|mc2-python|mc2-mailer-api) NEEDS_PYTHON=true ;;
+      mc2-gateway|mc2-account-api|mc2-core) NEEDS_RUST=true ;;
+      mc2-ui|mc2-operation-frontend|mc2-accounting-frontend|mc2-platform-frontend) NEEDS_NODE=true ;;
+    esac
+  done
+  # Only a backend checkout runs the cluster locally. A frontend developer points at
+  # the shared dev namespace and needs no kubeconfig at all.
+  NEEDS_CLUSTER=false
+  [[ "$NEEDS_PYTHON" == true || "$NEEDS_RUST" == true ]] && NEEDS_CLUSTER=true
+
+  echo "[2/5] Checking prerequisites"
 
   if ! command -v brew >/dev/null 2>&1; then
-    read -rp "      Homebrew isn't installed (needed for kubectl/helm). Install it now? [y/N] " ans
+    read -rp "      Homebrew isn't installed (needed for the tools below). Install it now? [y/N] " ans
     if [[ "$ans" =~ ^[Yy]$ ]]; then
       /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
       if [[ -x /opt/homebrew/bin/brew ]]; then
@@ -466,30 +531,95 @@ run_member_bootstrap() {
     echo ""
   fi
 
-  if ! command -v kubectl >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
-    read -rp "      kubectl isn't installed. Install it now via Homebrew? [y/N] " ans
-    [[ "$ans" =~ ^[Yy]$ ]] && run_with_spinner "brew install kubectl" brew install kubectl
+  # Offers to install anything missing that this checkout will actually use. Kept as
+  # offers rather than silent installs: this runs on someone's own machine.
+  #
+  # Declining must leave status 0: under `set -e` a non-zero return from a function
+  # call aborts the whole script — silently, since the "failure" is just answering N.
+  brew_offer() {
+    local tool="$1" formula="$2" why="$3"
+    command -v "$tool" >/dev/null 2>&1 && return 0
+    command -v brew >/dev/null 2>&1 || return 0
+    read -rp "      $tool isn't installed ($why). Install it now via Homebrew? [y/N] " ans
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      run_with_spinner "brew install $formula" brew install "$formula"
+    fi
+    return 0
+  }
+
+  if [[ "$NEEDS_CLUSTER" == true ]]; then
+    brew_offer kubectl kubectl "talks to the cluster"
+    brew_offer helm    helm    "installs Traefik locally"
   fi
 
-  if ! command -v helm >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
-    read -rp "      helm isn't installed. Install it now via Homebrew? [y/N] " ans
-    [[ "$ans" =~ ^[Yy]$ ]] && run_with_spinner "brew install helm" brew install helm
+  # The language toolchains virtualize --setup shells out to. Without these it fails
+  # partway through, after the configs are already written — so they are checked here,
+  # before anything is cloned, rather than discovered later.
+  if [[ "$NEEDS_PYTHON" == true ]]; then
+    brew_offer uv uv "Python toolchain — replaces pip and venv"
+  fi
+  if [[ "$NEEDS_NODE" == true ]]; then
+    brew_offer node node "runs the Nuxt apps"
+    # brew ships pnpm 12; the repos pin pnpm 11 via package.json's packageManager
+    # field, and pnpm self-manages down to it (manage-package-manager-versions,
+    # on by default since pnpm 10). So the major version here does not matter.
+    brew_offer pnpm pnpm "package manager for every JS repo"
+  fi
+  if [[ "$NEEDS_RUST" == true ]] && ! command -v cargo >/dev/null 2>&1; then
+    # Deliberately NOT `brew install rustup`: that formula is keg-only, no longer ships
+    # rustup-init, and installs no toolchain on its own — so cargo still would not
+    # exist afterwards. The upstream installer places cargo at ~/.cargo/bin and adds it
+    # to the shell profile itself, which is what every Rust toolchain doc assumes.
+    read -rp "      cargo isn't installed (builds the Rust services). Install rustup now? [y/N] " ans
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      run_with_spinner "rustup (installs the stable toolchain)" \
+        bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+      # Puts cargo on PATH for the rest of THIS script; rustup-init has already added
+      # it to the shell profile for later sessions.
+      if [[ -f "$HOME/.cargo/env" ]]; then
+        # shellcheck source=/dev/null
+        source "$HOME/.cargo/env"
+      fi
+    fi
   fi
   echo ""
 
   MISSING=()
+  FOUND=(git Homebrew)
   command -v git >/dev/null 2>&1 || MISSING+=("git
         Run: xcode-select --install")
   command -v brew >/dev/null 2>&1 || MISSING+=("Homebrew
-        Needed for kubectl/helm below. Install: https://brew.sh")
-  command -v docker >/dev/null 2>&1 || MISSING+=("Docker Desktop
+        Needed for the tools above. Install: https://brew.sh")
+
+  if [[ "$NEEDS_CLUSTER" == true ]]; then
+    FOUND+=(Docker kubectl helm)
+    command -v docker >/dev/null 2>&1 || MISSING+=("Docker Desktop
         1. Download and install: https://www.docker.com/products/docker-desktop/
         2. Open it once (finishes first-time setup)
         3. Enable Kubernetes: Docker Desktop -> Settings -> Kubernetes -> Enable Kubernetes")
-  command -v kubectl >/dev/null 2>&1 || MISSING+=("kubectl
+    command -v kubectl >/dev/null 2>&1 || MISSING+=("kubectl
         Run: brew install kubectl")
-  command -v helm >/dev/null 2>&1 || MISSING+=("helm
+    command -v helm >/dev/null 2>&1 || MISSING+=("helm
         Run: brew install helm")
+  fi
+
+  if [[ "$NEEDS_PYTHON" == true ]]; then
+    FOUND+=(uv)
+    command -v uv >/dev/null 2>&1 || MISSING+=("uv
+        Run: brew install uv")
+  fi
+  if [[ "$NEEDS_NODE" == true ]]; then
+    FOUND+=(node pnpm)
+    command -v node >/dev/null 2>&1 || MISSING+=("node
+        Run: brew install node")
+    command -v pnpm >/dev/null 2>&1 || MISSING+=("pnpm
+        Run: brew install pnpm")
+  fi
+  if [[ "$NEEDS_RUST" == true ]]; then
+    FOUND+=(cargo)
+    command -v cargo >/dev/null 2>&1 || MISSING+=("cargo
+        Run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh")
+  fi
 
   if [[ ${#MISSING[@]} -gt 0 ]]; then
     echo "      Missing:"
@@ -498,15 +628,15 @@ run_member_bootstrap() {
     echo "      Install these first, then re-run this script."
     exit 1
   fi
-  echo "      ✓ git, Homebrew, Docker, kubectl, helm all found"
+  echo "      ✓ ${FOUND[*]} all found"
 
-  if ! kubectl config get-contexts docker-desktop >/dev/null 2>&1; then
+  if [[ "$NEEDS_CLUSTER" == true ]] && ! kubectl config get-contexts docker-desktop >/dev/null 2>&1; then
     echo "      ! Docker Desktop's Kubernetes doesn't look enabled yet"
     echo "        Docker Desktop -> Settings -> Kubernetes -> Enable Kubernetes"
   fi
   echo ""
 
-  echo "[2/4] Setting up SSH access to GitHub"
+  echo "[3/5] Setting up SSH access to GitHub"
   if [[ -f "$SSH_KEY" ]]; then
     echo "      ✓ Found existing key at $SSH_KEY"
   else
@@ -535,42 +665,8 @@ run_member_bootstrap() {
   echo "      ✓ SSH access confirmed"
   echo ""
 
-  # A role preset, because "which of these sixteen repos do I need?" is a question a
-  # new developer cannot answer on their first day — and the answer decides how much
-  # setup they face afterwards. A frontend checkout holds nothing that reads a secret,
-  # so virtualize asks it for no credentials at all.
-  echo "[3/4] What will you be working on?"
-  echo ""
-  echo "  1) Frontend   — the three apps and the shared UI layer. No backend, no database."
-  echo "  2) Backend    — the APIs, the gateway, migrations and the shared Python library."
-  echo "  3) Everything — the whole platform."
-  echo "  4) Choose repositories myself"
-  echo ""
-  read -rp "  Select [1-4]: " _role
-  echo ""
-
-  BASE_REPOS=(mc2-wrappers mc2-k8s mc2-configs)
-  FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
-  BACKEND_REPOS=(mc2-core mc2-python mc2-gateway mc2-account-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons mc2-mailer-api)
-
-  ROLE="everything"
-  case "$_role" in
-    1) ROLE="frontend"; REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}") ;;
-    2) ROLE="backend";  REPOS=("${BASE_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
-    3) REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
-    4) echo "  (↑/↓ move, space toggle, enter confirm)"
-       echo ""
-       checkbox_menu "${REPOS[@]}"
-       REPOS=("${CHECKED_ITEMS[@]}")
-       ROLE="custom" ;;
-    *) echo "  Unrecognised choice — cloning everything."
-       REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
-  esac
-  echo "  Selected: $ROLE (${#REPOS[@]} repositories)"
-  echo ""
-
+  echo "[4/5] Cloning into $MC2_DIR"
   mkdir -p "$MC2_DIR"
-  echo "Cloning into $MC2_DIR"
   for repo in "${REPOS[@]}"; do
     dest="$MC2_DIR/$repo"
     [[ -d "$dest" ]] && continue
@@ -579,10 +675,18 @@ run_member_bootstrap() {
   done
   echo ""
 
-  echo "[4/4] Linking CLI tools"
+  echo "[5/5] Linking CLI tools"
   NEED_LINK=false
   [[ "$(readlink /usr/local/bin/kube 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/kube" ]] && NEED_LINK=true
   [[ "$(readlink /usr/local/bin/virtualize 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/virtualize" ]] && NEED_LINK=true
+
+  # A custom selection can leave mc2-wrappers unticked. Linking anyway would create a
+  # dangling symlink and report success — the worst of both.
+  if [[ ! -d "$MC2_DIR/mc2-wrappers" ]]; then
+    NEED_LINK=false
+    echo "      ! mc2-wrappers was not cloned — skipping. 'kube' and 'virtualize' will"
+    echo "        not exist until you clone it and re-run this script."
+  fi
 
   if [[ "$NEED_LINK" == true ]]; then
     sudo ln -sf "$MC2_DIR/mc2-wrappers/kube" /usr/local/bin/kube
@@ -612,14 +716,32 @@ run_member_bootstrap() {
   echo ""
 
   echo "--------------------"
-  if [[ "$ROLE" == "frontend" ]]; then
+  # Keyed on what was actually cloned, not the preset name: a custom selection of only
+  # frontend repos was never offered kubectl, so telling it to run `kube --reboot`
+  # would be advice that cannot work.
+  if [[ "$NEEDS_CLUSTER" == false ]]; then
     # No local cluster in this path on purpose: the dev tier's APIs are deployed, so
     # a frontend developer needs an app and a network, not Kubernetes on their Mac.
+    # Name a project that was actually cloned — a custom selection may not include
+    # platform-frontend, and an example pointing at a missing directory is noise.
+    _example_app="mc2-platform-frontend"; _example_port=":3001"
+    for _candidate in mc2-platform-frontend mc2-operation-frontend mc2-accounting-frontend mc2-ui; do
+      if [[ -d "$MC2_DIR/$_candidate" ]]; then
+        _example_app="$_candidate"
+        case "$_candidate" in
+          mc2-platform-frontend)   _example_port=":3001" ;;
+          mc2-operation-frontend)  _example_port=":3000" ;;
+          mc2-accounting-frontend) _example_port=":3002" ;;
+          mc2-ui)                  _example_port=":6006, Storybook" ;;
+        esac
+        break
+      fi
+    done
     echo "You're set up. Two commands and you're running:"
     echo ""
     echo "  cd $MC2_DIR"
     echo "  virtualize --setup -e dev                       # installs deps, writes dev configs"
-    echo "  virtualize -p mc2-platform-frontend --start     # :3001"
+    echo "  virtualize -p $_example_app --start   # $_example_port"
     echo ""
     echo "Reaching *-dev.mc2-dev.com needs Tailscale — ask to be added to the network."
     echo "Move one app to another tier with 'virtualize -p <project> --switch-dev' (or"
