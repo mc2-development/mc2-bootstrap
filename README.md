@@ -14,10 +14,22 @@ git clone https://github.com/mc2-development/mc2-bootstrap.git
 cd mc2-bootstrap && ./bootstrap.sh
 ```
 
-Checks prerequisites, generates an SSH key if you have none and walks you through
-adding it to GitHub, clones the eleven repos into `~/Work/mc2`, symlinks the CLIs.
+Asks what you'll be working on, checks and offers to install the prerequisites that
+answer actually needs, generates an SSH key if you have none and walks you through
+adding it to GitHub, clones the repos into `~/Work/mc2`, symlinks the CLIs.
 
-Doesn't touch the cluster. Afterwards:
+| Preset | Clones | Toolchains checked |
+|---|---|---|
+| Frontend | the three apps + `mc2-ui` | node, pnpm |
+| Backend | the APIs, gateway, migrator, shared Python lib | uv, cargo, Docker, kubectl, helm |
+| Everything | all of the above | all of the above |
+| Choose myself | whatever you tick | derived from what you ticked |
+
+Frontend is deliberately the lighter path: those repos run against the deployed dev
+tier, so that checkout needs no Docker, no kubectl and no kubeconfig. `mc2-mailer-api`
+is shown but unticked — it is an empty repo until the core platform is stable.
+
+Doesn't touch the cluster. Afterwards (backend/everything):
 
 ```bash
 kube --install-traefik   # one-time
