@@ -550,6 +550,11 @@ run_member_bootstrap() {
   if [[ "$NEEDS_CLUSTER" == true ]]; then
     brew_offer kubectl kubectl "talks to the cluster"
     brew_offer helm    helm    "installs Traefik locally"
+    # The pipeline runs in the cluster, so reading it means talking to the cluster.
+    # Both CLIs work off ~/.kube/hetzner.yaml — argo needs nothing else; argocd wants
+    # one `argocd login argocd.mc2-dev.com` whose session then persists.
+    brew_offer argo    argo    "reads the build pipeline (argo workflows)"
+    brew_offer argocd  argocd  "reads what is deployed (argo cd)"
   fi
 
   # The language toolchains virtualize --setup shells out to. Without these it fails
@@ -592,7 +597,7 @@ run_member_bootstrap() {
         Needed for the tools above. Install: https://brew.sh")
 
   if [[ "$NEEDS_CLUSTER" == true ]]; then
-    FOUND+=(Docker kubectl helm)
+    FOUND+=(Docker kubectl helm argo argocd)
     command -v docker >/dev/null 2>&1 || MISSING+=("Docker Desktop
         1. Download and install: https://www.docker.com/products/docker-desktop/
         2. Open it once (finishes first-time setup)
@@ -601,6 +606,10 @@ run_member_bootstrap() {
         Run: brew install kubectl")
     command -v helm >/dev/null 2>&1 || MISSING+=("helm
         Run: brew install helm")
+    command -v argo >/dev/null 2>&1 || MISSING+=("argo
+        Run: brew install argo")
+    command -v argocd >/dev/null 2>&1 || MISSING+=("argocd
+        Run: brew install argocd")
   fi
 
   if [[ "$NEEDS_PYTHON" == true ]]; then
