@@ -707,21 +707,37 @@ run_member_bootstrap() {
   NEED_LINK=false
   [[ "$(readlink /usr/local/bin/kube 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/kube" ]] && NEED_LINK=true
   [[ "$(readlink /usr/local/bin/virtualize 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/virtualize" ]] && NEED_LINK=true
+  [[ "$(readlink /usr/local/bin/flow 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/flow" ]] && NEED_LINK=true
 
   # A custom selection can leave mc2-wrappers unticked. Linking anyway would create a
   # dangling symlink and report success — the worst of both.
   if [[ ! -d "$MC2_DIR/mc2-wrappers" ]]; then
     NEED_LINK=false
-    echo "      ! mc2-wrappers was not cloned — skipping. 'kube' and 'virtualize' will"
+    echo "      ! mc2-wrappers was not cloned — skipping. 'kube', 'virtualize' and 'flow' will"
     echo "        not exist until you clone it and re-run this script."
   fi
 
   if [[ "$NEED_LINK" == true ]]; then
     sudo ln -sf "$MC2_DIR/mc2-wrappers/kube" /usr/local/bin/kube
     sudo ln -sf "$MC2_DIR/mc2-wrappers/virtualize" /usr/local/bin/virtualize
-    echo "      ✓ kube and virtualize linked into /usr/local/bin"
+    sudo ln -sf "$MC2_DIR/mc2-wrappers/flow" /usr/local/bin/flow
+    echo "      ✓ kube, virtualize and flow linked into /usr/local/bin"
   else
-    echo "      ✓ kube and virtualize already correctly linked"
+    echo "      ✓ kube, virtualize and flow already correctly linked"
+  fi
+  echo ""
+
+  # Local runs on Docker Desktop, whose ClusterIPs the host cannot reach — unlike dev
+  # and prod, where the node advertises the service CIDR as a tailscale subnet route.
+  # The agent keeps that one tunnel up across reboots so nobody has to know it exists.
+  if [[ -x "$MC2_DIR/mc2-wrappers/virtualize" ]]; then
+    if launchctl print "gui/$UID/com.mc2.fwd.local" >/dev/null 2>&1; then
+      echo "      ✓ local forwards already running as a launchd agent"
+    else
+      "$MC2_DIR/mc2-wrappers/virtualize" --fwd-install >/dev/null 2>&1 \
+        && echo "      ✓ local forwards installed (starts at login; virtualize --fwd-status)" \
+        || echo "      ! could not install the local forward agent — run: virtualize --fwd-install"
+    fi
   fi
   echo ""
 
