@@ -448,6 +448,25 @@ run_server_bootstrap() {
   echo "   Postgres (5432) is never exposed either — it stays a ClusterIP service"
   echo "   reached with 'kubectl port-forward' over the tunnel."
   echo ""
+  echo ""
+  echo "3. Bring the platform up, from mc2-k8s. Once per cluster, and the order is a"
+  echo "   real dependency chain rather than a preference:"
+  echo ""
+  echo "     ./create-secrets.sh dev        # every credential the cluster needs"
+  echo "     make cert-manager ENV=dev      # cert-manager + the ClusterIssuers"
+  echo "     make tls ENV=dev               # the one wildcard cert + Traefik TLSStore"
+  echo "     make deploy-data ENV=dev       # namespace, postgres, redis"
+  echo "     ./bootstrap-db-roles.sh dev    # the *_svc roles get their logins"
+  echo "     make argocd ENV=dev            # what deploys:  argocd.mc2-dev.com"
+  echo "     make argo-wf ENV=dev           # what builds:  workflows.mc2-dev.com"
+  echo ""
+  echo "   create-secrets.sh reads mc2-configs/k8s/dev/configuration.yaml and the"
+  echo "   files under secrets/ — the GitHub App key, two deploy keys, the JWT signing"
+  echo "   key. None of those are in git or on a fresh machine: read"
+  echo "   mc2-k8s/docs/03-secrets-and-config.md BEFORE this step, not after."
+  echo ""
+  echo "   Nothing deploys from a merge to main. A service reaches dev by merging into"
+  echo "   its dev/dev branch, which asks the cluster to build it."
 }
 
 # ==============================================================================
@@ -550,6 +569,11 @@ run_member_bootstrap() {
   if [[ "$NEEDS_CLUSTER" == true ]]; then
     brew_offer kubectl kubectl "talks to the cluster"
     brew_offer helm    helm    "installs Traefik locally"
+    # The pipeline runs in the cluster, so reading it means talking to the cluster.
+    # Both CLIs work off ~/.kube/hetzner.yaml — argo needs nothing else; argocd wants
+    # one `argocd login argocd.mc2-dev.com` whose session then persists.
+    brew_offer argo    argo    "reads the build pipeline (argo workflows)"
+    brew_offer argocd  argocd  "reads what is deployed (argo cd)"
   fi
 
   # The language toolchains virtualize --setup shells out to. Without these it fails
@@ -592,7 +616,7 @@ run_member_bootstrap() {
         Needed for the tools above. Install: https://brew.sh")
 
   if [[ "$NEEDS_CLUSTER" == true ]]; then
-    FOUND+=(Docker kubectl helm)
+    FOUND+=(Docker kubectl helm argo argocd)
     command -v docker >/dev/null 2>&1 || MISSING+=("Docker Desktop
         1. Download and install: https://www.docker.com/products/docker-desktop/
         2. Open it once (finishes first-time setup)
@@ -601,6 +625,10 @@ run_member_bootstrap() {
         Run: brew install kubectl")
     command -v helm >/dev/null 2>&1 || MISSING+=("helm
         Run: brew install helm")
+    command -v argo >/dev/null 2>&1 || MISSING+=("argo
+        Run: brew install argo")
+    command -v argocd >/dev/null 2>&1 || MISSING+=("argocd
+        Run: brew install argocd")
   fi
 
   if [[ "$NEEDS_PYTHON" == true ]]; then
@@ -679,21 +707,37 @@ run_member_bootstrap() {
   NEED_LINK=false
   [[ "$(readlink /usr/local/bin/kube 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/kube" ]] && NEED_LINK=true
   [[ "$(readlink /usr/local/bin/virtualize 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/virtualize" ]] && NEED_LINK=true
+  [[ "$(readlink /usr/local/bin/flow 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/flow" ]] && NEED_LINK=true
 
   # A custom selection can leave mc2-wrappers unticked. Linking anyway would create a
   # dangling symlink and report success — the worst of both.
   if [[ ! -d "$MC2_DIR/mc2-wrappers" ]]; then
     NEED_LINK=false
-    echo "      ! mc2-wrappers was not cloned — skipping. 'kube' and 'virtualize' will"
+    echo "      ! mc2-wrappers was not cloned — skipping. 'kube', 'virtualize' and 'flow' will"
     echo "        not exist until you clone it and re-run this script."
   fi
 
   if [[ "$NEED_LINK" == true ]]; then
     sudo ln -sf "$MC2_DIR/mc2-wrappers/kube" /usr/local/bin/kube
     sudo ln -sf "$MC2_DIR/mc2-wrappers/virtualize" /usr/local/bin/virtualize
-    echo "      ✓ kube and virtualize linked into /usr/local/bin"
+    sudo ln -sf "$MC2_DIR/mc2-wrappers/flow" /usr/local/bin/flow
+    echo "      ✓ kube, virtualize and flow linked into /usr/local/bin"
   else
-    echo "      ✓ kube and virtualize already correctly linked"
+    echo "      ✓ kube, virtualize and flow already correctly linked"
+  fi
+  echo ""
+
+  # Local runs on Docker Desktop, whose ClusterIPs the host cannot reach — unlike dev
+  # and prod, where the node advertises the service CIDR as a tailscale subnet route.
+  # The agent keeps that one tunnel up across reboots so nobody has to know it exists.
+  if [[ -x "$MC2_DIR/mc2-wrappers/virtualize" ]]; then
+    if launchctl print "gui/$UID/com.mc2.fwd.local" >/dev/null 2>&1; then
+      echo "      ✓ local forwards already running as a launchd agent"
+    else
+      "$MC2_DIR/mc2-wrappers/virtualize" --fwd-install >/dev/null 2>&1 \
+        && echo "      ✓ local forwards installed (starts at login; virtualize --fwd-status)" \
+        || echo "      ! could not install the local forward agent — run: virtualize --fwd-install"
+    fi
   fi
   echo ""
 
