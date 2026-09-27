@@ -347,6 +347,39 @@ run_server_bootstrap() {
   else
     echo "      ✓ ufw not active"
   fi
+
+  # inotify. The kernel ships max_user_instances at 128 — a desktop number that a
+  # Kubernetes node exhausts without trying. k3s's kubelet alone holds 25-40
+  # instances watching ConfigMap and Secret volumes, and nearly every component
+  # on top is a Go program that opens more: Traefik, cert-manager, ArgoCD, Argo
+  # Workflows, Grafana, Loki, Prometheus, Alloy.
+  #
+  # Past the limit a watcher fails with "too many open files" and the loser is
+  # whichever process asked last — so the symptom lands somewhere unrelated to
+  # the cause. On this platform it was Alloy's log tailer, which then wrote its
+  # own failure into the log stream it was meant to be reading: 1,242 error lines
+  # against 2 real ones from Postgres in a day, and the database's logs simply
+  # absent from Grafana. Nothing alerted, because nothing had crashed.
+  #
+  # 8192 / 524288 are what enterprise distributions ship (OpenShift's defaults).
+  #
+  # Written to /etc/sysctl.d, NOT applied with `sysctl -w`: the latter is lost on
+  # the next reboot, which turns a fixed node into one that breaks again months
+  # later with nothing to connect it to.
+  echo ""
+  echo "      Raising inotify limits (128 instances is a desktop default)"
+  _sysctl_file=/etc/sysctl.d/99-mc2-inotify.conf
+  printf 'fs.inotify.max_user_instances = 8192\nfs.inotify.max_user_watches = 524288\n' > "$_sysctl_file"
+  sysctl --system >/dev/null 2>&1 || true
+  _inst="$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)"
+  _watch="$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)"
+  if [[ "$_inst" -ge 8192 ]]; then
+    echo "      ✓ inotify: $_inst instances, $_watch watches (persisted in $_sysctl_file)"
+  else
+    echo "      ! inotify still reports $_inst instances after applying $_sysctl_file."
+    echo "        Something else is overriding it — check /etc/sysctl.conf and"
+    echo "        /etc/sysctl.d/*. Leaving it will cost you pod logs, silently."
+  fi
   echo ""
 
   # --- [2/3] k3s ---------------------------------------------------------------
