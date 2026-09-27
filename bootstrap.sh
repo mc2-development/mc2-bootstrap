@@ -31,7 +31,7 @@ GITHUB_OWNER="${GITHUB_OWNER:-mc2-development}"
 
 WORK_DIR="$HOME/Work"
 MC2_DIR="$WORK_DIR/mc2"
-REPOS=(mc2-wrappers mc2-k8s mc2-configs mc2-core mc2-python mc2-gateway mc2-account-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
+REPOS=(mc2-wrappers mc2-k8s mc2-configs mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
 
 # Default filename — ssh tries this automatically with no ~/.ssh/config needed,
 # as long as it's the only key on the machine.
@@ -472,8 +472,9 @@ run_server_bootstrap() {
   echo "     ./bootstrap-db-roles.sh dev    # the *_svc roles get their logins"
   echo "     make argocd ENV=dev            # what deploys:  argocd.mc2-dev.com"
   echo "     make argo-wf ENV=dev           # what builds:  workflows.mc2-dev.com"
+  echo "     make observability ENV=dev     # what watches: grafana.mc2-dev.com"
   echo ""
-  echo "   create-secrets.sh reads mc2-configs/k8s/dev/configuration.yaml and the"
+  echo "   create-secrets.sh reads every file in mc2-configs/k8s/dev/ and the"
   echo "   files under secrets/ — the GitHub App key, two deploy keys, the JWT signing"
   echo "   key. None of those are in git or on a fresh machine: read"
   echo "   mc2-k8s/docs/03-secrets-and-config.md BEFORE this step, not after."
@@ -515,7 +516,11 @@ run_member_bootstrap() {
   FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
   # mc2-mailer-api is deliberately absent: it is an empty repo until the core platform
   # is stable (its own README says so). Still reachable through "choose myself".
-  BACKEND_REPOS=(mc2-core mc2-python mc2-gateway mc2-account-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
+  # mc2-rust is not optional for this preset: mc2-gateway and mc2-account-api
+  # declare it as a PATH dependency (../mc2-rust), so a checkout without it
+  # fails at `cargo build` with a missing Cargo.toml rather than anything that
+  # names the real problem.
+  BACKEND_REPOS=(mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
 
   ROLE="everything"
   case "$_role" in
