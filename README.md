@@ -21,9 +21,15 @@ adding it to GitHub, clones the repos into `~/Work/mc2`, symlinks the CLIs.
 | Preset | Clones | Toolchains checked |
 |---|---|---|
 | Frontend | the three apps + `mc2-ui` | node, pnpm |
-| Backend | the APIs, gateway, migrator, shared Python lib | uv, cargo, Docker, kubectl, helm |
+| Backend | the APIs, gateway, migrator, both shared libs | uv, cargo, Docker, kubectl, helm |
 | Everything | all of the above | all of the above |
 | Choose myself | whatever you tick | derived from what you ticked |
+
+`mc2-rust` comes with the backend preset and is not optional there: the Rust
+services declare it as a PATH dependency (`../mc2-rust`), so a checkout without
+it fails at `cargo build` with a missing Cargo.toml rather than anything naming
+the real problem. `mc2-python` is the same relationship for the FastAPI
+services, resolved through uv rather than a path.
 
 Frontend is deliberately the lighter path: those repos run against the deployed dev
 tier, so that checkout needs no Docker, no kubectl and no kubeconfig. `mc2-mailer-api`
