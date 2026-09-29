@@ -25,6 +25,13 @@ adding it to GitHub, clones the repos into `~/Work/mc2`, symlinks the CLIs.
 | Everything | all of the above | all of the above |
 | Choose myself | whatever you tick | derived from what you ticked |
 
+**`tailscale` is checked for every preset, including Frontend.** Every
+`mc2-dev.com` hostname resolves to the server's tailnet address — `auth-dev.mc2-dev.com`
+is `100.123.167.112` — and the Hetzner firewall drops the public IP, so a machine
+that has not joined the tailnet cannot reach the dev tier at all. Installed as a
+cask (the macOS client is a GUI app that ships the CLI as a symlink); signing in
+and being invited to the tailnet stay manual.
+
 `mc2-rust` comes with the backend preset and is not optional there: the Rust
 services declare it as a PATH dependency (`../mc2-rust`), so a checkout without
 it fails at `cargo build` with a missing Cargo.toml rather than anything naming
@@ -32,7 +39,8 @@ the real problem. `mc2-python` is the same relationship for the FastAPI
 services, resolved through uv rather than a path.
 
 Frontend is deliberately the lighter path: those repos run against the deployed dev
-tier, so that checkout needs no Docker, no kubectl and no kubeconfig. `mc2-mailer-api`
+tier, so that checkout needs no Docker, no kubectl and no kubeconfig — but it does
+need tailscale, precisely *because* it runs against the deployed tier. `mc2-mailer-api`
 is shown but unticked — it is an empty repo until the core platform is stable.
 
 Doesn't touch the cluster. Afterwards (backend/everything):
@@ -57,9 +65,30 @@ bash /tmp/bootstrap.sh --server
 Guards: refuses non-Linux, refuses non-root, requires the shared passphrase (an
 accident guard, not a security control), and makes you type the hostname back.
 
-Installs k3s pinned to `K3S_VERSION`, with:
+Installs **tailscale** first, before k3s, and brings it up advertising the cluster
+service CIDR (`10.43.0.0/16`) with `--accept-dns=false`. The ordering is
+load-bearing in both directions: k3s bakes its API certificate at install time and
+the tailnet address can only enter it as a `--tls-san`, and with the Hetzner
+firewall closed the tunnel is the only route to the host at all. `tailscale up`
+prints a URL and blocks until the machine is authenticated — that is why server
+mode is run from a shell on the box.
 
-- `--tls-san <public-ip>` so a kubeconfig pointed at the public address verifies
+One step stays manual and cannot be otherwise: **approving the subnet route** in
+the tailscale admin console (Machines -> this host -> Subnets). Advertising is what
+a machine can do for itself; approval is a tailnet-wide decision. Until it is
+approved a laptop can reach the host but not the ClusterIPs behind it.
+
+`--accept-dns=false` is not optional on a Kubernetes node: accepting tailnet DNS
+rewrites `/etc/resolv.conf`, which is what CoreDNS forwards to, so in-cluster name
+resolution breaks in a way that looks like a CoreDNS bug.
+
+Then installs k3s pinned to `K3S_VERSION`, with:
+
+- `--tls-san` for **both** the public IP and the tailnet address, so a kubeconfig
+  pointed at either verifies. If tailscale somehow has no address by this point the
+  script now refuses rather than continuing — a certificate without the tailnet SAN
+  cannot be corrected without reinstalling k3s, and the firewall leaves no other
+  way in
 - `--secrets-encryption` — **install-time only**; enabling it later needs a restart,
   and without it every database password sits base64-encoded in the datastore where
   a disk image or Hetzner snapshot exposes it

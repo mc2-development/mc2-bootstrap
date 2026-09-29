@@ -1,0 +1,54 @@
+# Shared yamlfmt config, copied into every repo that has YAML worth formatting.
+# See taplo.toml (its TOML equivalent) and hooks/README.md for the pattern: one
+# config, defined once, copied because CI checks out one repo at a time and cannot
+# resolve a sibling path.
+#
+# yamlfmt (github.com/google/yamlfmt), not prettier: a single static Go binary with
+# no runtime, the same shape as taplo for TOML — this workspace already treats "no
+# extra ecosystem, one pinned binary" as a principle, and prettier would mean a
+# Node/npm dependency in repos that are otherwise Rust, Python or plain shell.
+#
+# Every setting below was checked against real files before being set, not assumed —
+# two of yamlfmt's three relevant defaults were wrong for this workspace:
+# Anything a package manager owns, never a person — running a formatter inside
+# node_modules is pointless work today and a correctness risk the day some vendored
+# package's own YAML happens to be sensitive to exact formatting.
+exclude:
+  - "**/node_modules/**"
+
+formatter:
+  type: basic
+  # Off (yamlfmt's own default): every manifest here uses the standard "+2" list
+  # style — `containers:` then `  - name: postgres`, one level deeper than the key.
+  # The on/indentless style (dash flush with the key) is NOT used anywhere once
+  # actually surveyed across all 38 kustomization.yaml files plus every manifest.
+  indentless_arrays: false
+  # On: the default removes blank lines between comment blocks and the field they
+  # document. Every manifest here uses a blank line as a paragraph break inside a
+  # comment; collapsing them turns readable prose into a wall of text.
+  retain_line_breaks: true
+  # On: without it, a folded block scalar (`>-`) gets its line breaks collapsed
+  # toward one line. The CSP header in platform/traefik/traefik-middleware.yaml is
+  # written one directive per line for readability — safe to do either way since a
+  # folded scalar's line breaks become plain spaces when PARSED regardless (that is
+  # what folded means, as opposed to `|` literal), so reformatting could not change
+  # the actual header string. This keeps the human-chosen layout rather than
+  # "fixing" something that was never wrong.
+  scan_folded_as_literal: true
+  #
+  # include_document_start is DELIBERATELY ABSENT, not set to true or false.
+  #
+  # This repo has no single convention for `---`: 33 files are genuinely
+  # multi-document (platform/policy/networkpolicy.yaml alone is 24 resources in one
+  # file) and correctly use it, while single-resource files correctly have none. A
+  # boolean here is wrong either way — `true` forces `---` onto files that never had
+  # one (proven: it added a leading `---` to all 38 kustomization.yaml files, none of
+  # which want it), and `false` strips the marker from every multi-document file,
+  # which does not just look different — `kubectl`/kustomize split resources on that
+  # marker, so removing it changes what the file MEANS.
+  #
+  # Leaving the key out was verified to do the right thing on both kinds: it
+  # preserves whatever document markers a file already has, adding and removing
+  # none. That is what "everything gets a formatter" should mean for this repo —
+  # consistent indentation and spacing, not homogenising a distinction the files
+  # are using on purpose.
