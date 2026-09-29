@@ -1,0 +1,53 @@
+name: CI
+
+# This repo had no CI. It is one script, but it is the script that provisions a developer
+# machine and the production server — it installs k3s with the flags that bake the API
+# certificate, disables ufw, and writes the kubeconfig everything else depends on. A typo
+# here is discovered on a fresh box, which is the worst place to discover one.
+#
+# The same checks run locally as a pre-push hook (mc2-wrappers/hooks/pre-push). That is a
+# duplicate on purpose: the hook is skippable, so it makes failure cheap rather than
+# binding. This is the binding half.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install yamlfmt
+        # `go install` puts the binary in GOPATH/bin, which is NOT on PATH for the
+        # next step by default — that gap is exactly what broke the first run of
+        # this workflow ("yamlfmt: command not found", exit 127) even though the
+        # install itself succeeded. $GITHUB_PATH is the fix: appending to it here
+        # makes the directory available to every step after this one, not just
+        # this shell.
+        run: |
+          go install github.com/google/yamlfmt/cmd/yamlfmt@v0.21.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: yamlfmt
+        run: yamlfmt -lint .
+
+      - name: shellcheck
+        run: shellcheck --severity=warning bootstrap.sh
+
+      - name: bash syntax
+        run: bash -n bootstrap.sh
+
+      # --help must work without arguments, a TTY, or anything installed. It is the first
+      # thing anyone runs on a machine where nothing is set up yet, and `set -eu` plus an
+      # unset variable in the usage path would turn that into a silent exit 1.
+      - name: help runs on a bare machine
+        run: bash bootstrap.sh --help

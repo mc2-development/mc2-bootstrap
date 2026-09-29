@@ -25,7 +25,24 @@
 #
 #   ssh -t root@<ip> 'bash /tmp/bootstrap.sh --server'
 #   ssh root@<ip> 'MC2_SERVER_PASSPHRASE=... bash /tmp/bootstrap.sh --server'
-set -e
+# -u as well as -e: an unset variable is an error rather than an empty string.
+#
+# Not a style preference — it is what catches the class of bug this codebase has
+# already produced: create-secrets.sh composed a DSN around an unset
+# ACCOUNT_SVC_PASSWORD and the result was still non-empty, so the `require` guard
+# written specifically to prevent that passed it.
+#
+# Worth being precise about what -u does NOT catch, so it is not trusted too far: a
+# reference written ${var:-default} is legal with var unset, so the $ts_ip bug below
+# (read on a path where it was only assigned in the other branch of an if) was invisible
+# to it. That one needed the variable hoisted, not a shell flag.
+#
+# `pipefail` is deliberately NOT set here yet. There are ~27 pipelines across these
+# tools whose first command is allowed to fail — the config-discovery idiom
+# `ls <glob> 2>/dev/null | grep -v example` is the clearest, and it fails on an empty
+# directory by design. Turning pipefail on without auditing each one trades a silent
+# bug for a loud one in working code. It is worth doing as its own pass.
+set -eu
 
 GITHUB_OWNER="${GITHUB_OWNER:-mc2-development}"
 
@@ -60,6 +77,13 @@ KUBE_CONTEXT_NAME="mc2-hetzner"
 # Update path: check the channel list, bump, re-provision a throwaway box, test.
 #     curl -s https://update.k3s.io/v1-release/channels | grep -o 'v1[^"]*k3s1' | head
 K3S_VERSION="v1.36.4+k3s1"
+
+# k3s's default service CIDR, advertised to the tailnet as a subnet route so a
+# laptop can dial a ClusterIP directly (10.43.0.100:5432 for the database,
+# 10.43.0.101:6379 for redis) instead of holding a port-forward open. Declared
+# here because two places need it to agree: the route advertised below, and the
+# pinned ClusterIPs in mc2-k8s/overlays/<env>/data/clusterips.yaml.
+K3S_SERVICE_CIDR="10.43.0.0/16"
 
 MODE="member"
 IP_OVERRIDE=""
@@ -322,6 +346,70 @@ run_server_bootstrap() {
   fi
   echo "      ✓ curl and systemd present"
 
+  # Tailscale, installed HERE — before k3s, not after.
+  #
+  # This is the one piece of software this platform actually needs on the host, and
+  # the ordering is load-bearing twice over:
+  #
+  #   1. k3s bakes the API certificate at install time. The tailnet address can only
+  #      get into it as a --tls-san, and adding a SAN later means editing the k3s
+  #      config and restarting the server. So the interface has to exist before the
+  #      [2/3] step reads `tailscale ip -4`.
+  #   2. The Hetzner firewall is closed to everything (see step 2 of the summary at
+  #      the end). Every way into this box that is not this tunnel — kubectl, Grafana,
+  #      ArgoCD, the workflows UI, a psql client — arrives over the tailnet. A server
+  #      without tailscale is a server nobody can administer.
+  #
+  # Previously this script only DETECTED tailscale and told the operator to install it
+  # and re-run, which made a fresh provision a two-pass job where the first pass
+  # produced a certificate that had to be thrown away.
+  if ! command -v tailscale >/dev/null 2>&1; then
+    echo "      Installing tailscale (the only way into this host once the firewall is closed)"
+    # The vendor script, not apt directly: it adds the signing key and the release
+    # channel for THIS Ubuntu version, which is what `apt-get install tailscale`
+    # alone cannot do on a box that has never seen the repo.
+    run_with_spinner "curl tailscale.com/install.sh | sh" \
+      bash -c 'curl -fsSL https://tailscale.com/install.sh | sh'
+  else
+    echo "      ✓ tailscale already installed ($(tailscale version 2>/dev/null | head -1))"
+  fi
+
+  # `tailscale up` is interactive by design — it prints a URL to authenticate the
+  # machine and blocks until that is done. Deliberately NOT wrapped in the spinner:
+  # the operator has to see and click that URL.
+  #
+  # --accept-dns=false is not optional on a Kubernetes node. Accepting the tailnet's
+  # DNS rewrites /etc/resolv.conf, which is what CoreDNS forwards to for anything
+  # outside the cluster — so cluster DNS starts resolving through the tunnel and
+  # in-cluster name resolution breaks in a way that looks like a CoreDNS bug.
+  _ts_routes="$(tailscale debug prefs 2>/dev/null | grep -A2 '"AdvertiseRoutes"' | grep -c "$K3S_SERVICE_CIDR" || true)"
+  if tailscale status >/dev/null 2>&1 && [[ "${_ts_routes:-0}" -gt 0 ]]; then
+    echo "      ✓ tailscale up, already advertising $K3S_SERVICE_CIDR"
+  else
+    echo ""
+    echo "      Bringing tailscale up and advertising the cluster service CIDR."
+    echo "      A URL follows — open it to authenticate this machine."
+    echo ""
+    tailscale up --advertise-routes="$K3S_SERVICE_CIDR" --accept-dns=false
+    echo ""
+    echo "      ✓ tailscale up, advertising $K3S_SERVICE_CIDR"
+    echo "      ! The route is NOT live until it is approved in the admin console:"
+    echo "        Machines -> this host -> Subnets -> approve $K3S_SERVICE_CIDR"
+    echo "        Until then a laptop can reach this host but not the ClusterIPs behind it."
+  fi
+
+  # Resolved ONCE, here, because two later steps need it and they are on different
+  # branches: the --tls-san list in [2/3] (skipped entirely when k3s is already
+  # running) and the kubeconfig rewrite at the end (never skipped).
+  #
+  # That split was a live bug. ts_ip used to be assigned only inside the "k3s is not
+  # yet installed" branch, so on any RE-RUN against an existing server it was unset,
+  # and `kube_addr="${ts_ip:-$public_ip}"` silently fell back to the public IP —
+  # rewriting a working kubeconfig to an address the firewall drops, and overwriting
+  # the good file in the process. The `:-` default is exactly why no shell flag caught
+  # it.
+  ts_ip="$(tailscale ip -4 2>/dev/null | head -1 || true)"
+
   # ufw is on by default in some Ubuntu images and is a known k3s footgun: it
   # filters the flannel VXLAN traffic and the pod/service CIDRs, so the cluster
   # comes up looking healthy and then DNS and pod-to-pod networking quietly fail.
@@ -380,6 +468,53 @@ run_server_bootstrap() {
     echo "        Something else is overriding it — check /etc/sysctl.conf and"
     echo "        /etc/sysctl.d/*. Leaving it will cost you pod logs, silently."
   fi
+
+  # journald. The default cap is 10% of /var — about 7.5G on a 75G disk — which is a
+  # lot of headroom to hand to logs on the one filesystem that also holds every
+  # container image, the BuildKit cache and the k3s datastore. Alloy ships logs to
+  # Loki (which has its own 30-day retention), so the journal is only ever a local
+  # tail, and 500M of it is generous.
+  #
+  # A drop-in rather than an edit to journald.conf, for the same reason inotify is a
+  # file in sysctl.d: a package upgrade rewrites the main config and silently takes
+  # the setting with it.
+  echo "      Capping the systemd journal (default is 10% of /var)"
+  mkdir -p /etc/systemd/journald.conf.d
+  printf '[Journal]\nSystemMaxUse=500M\nSystemKeepFree=2G\n' > /etc/systemd/journald.conf.d/99-mc2.conf
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
+  echo "      ✓ journal capped at 500M (/etc/systemd/journald.conf.d/99-mc2.conf)"
+
+  # kubelet image garbage collection. k3s inherits the kubelet defaults — prune at 85%
+  # of the disk, down to 80% — and on this box those are the wrong numbers in a way
+  # that cannot recover:
+  #
+  #   85% of 75G is ~64G, and the BuildKit layer cache is a PVC, which image GC does
+  #   not count at all. The cache alone is allowed 25G by its own gcpolicy. 64G of
+  #   images plus 25G of cache is 89G on a 75G disk, so the filesystem fills before
+  #   the kubelet has any reason to act — and a full disk takes the datastore, the
+  #   container runtime and the API server with it.
+  #
+  # 70/60 prunes at ~52G, which leaves the cache its 25G and still has room. Written
+  # to config.yaml rather than baked into INSTALL_K3S_EXEC so that re-running this
+  # script fixes an EXISTING node too, exactly like the inotify file above.
+  echo "      Setting kubelet image-GC thresholds (defaults fill this disk)"
+  mkdir -p /etc/rancher/k3s
+  _k3s_cfg=/etc/rancher/k3s/config.yaml
+  if [[ -f "$_k3s_cfg" ]] && ! grep -q "image-gc-high-threshold" "$_k3s_cfg" 2>/dev/null; then
+    echo "      ! $_k3s_cfg already exists and does not set image-gc thresholds."
+    echo "        Not overwriting it — merge these by hand:"
+    echo "          kubelet-arg:"
+    echo "            - \"image-gc-high-threshold=70\""
+    echo "            - \"image-gc-low-threshold=60\""
+  else
+    printf 'kubelet-arg:\n  - "image-gc-high-threshold=70"\n  - "image-gc-low-threshold=60"\n' > "$_k3s_cfg"
+    echo "      ✓ image GC set to prune at 70%% / down to 60%% ($_k3s_cfg)"
+    if systemctl is-active --quiet k3s 2>/dev/null; then
+      echo "      ! k3s is already running — this file is read at startup, so the"
+      echo "        change is pending until:  systemctl restart k3s"
+      echo "        (brief API-server outage; running pods are not restarted)"
+    fi
+  fi
   echo ""
 
   # --- [2/3] k3s ---------------------------------------------------------------
@@ -406,13 +541,22 @@ run_server_bootstrap() {
     # firewall fully closed, kubectl reaches the API server over the tunnel, and
     # a SAN can only be added later by editing k3s config and restarting.
     tls_sans="--tls-san $public_ip"
-    ts_ip="$(command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -1 || true)"
     if [[ -n "$ts_ip" ]]; then
       echo "      ✓ tailscale detected ($ts_ip) — adding it to the API certificate"
       tls_sans+=" --tls-san $ts_ip"
     else
-      echo "      ! no tailscale interface — the API certificate will only cover $public_ip."
-      echo "        For VPN-only kubectl access, install tailscale first, then re-run."
+      # [1/3] installs tailscale and brings it up, so reaching here means the
+      # interface genuinely failed to appear — an unauthenticated `tailscale up`,
+      # or tailscaled not running. Refuse rather than continue: a certificate
+      # without the tailnet SAN cannot be fixed without reinstalling k3s, and the
+      # firewall leaves no other route to the API server.
+      echo "      ✗ tailscale is installed but has no IPv4 address."
+      echo "        The API certificate is baked at install time and the tailnet"
+      echo "        address can only go in as a --tls-san, so continuing would"
+      echo "        produce a cluster this machine cannot be administered through."
+      echo ""
+      echo "        Fix it, then re-run:  tailscale up --advertise-routes=$K3S_SERVICE_CIDR --accept-dns=false"
+      exit 1
     fi
     run_with_spinner "curl get.k3s.io | sh ($K3S_VERSION)" \
       env INSTALL_K3S_VERSION="$K3S_VERSION" \
@@ -448,6 +592,16 @@ run_server_bootstrap() {
   # the wrong "default" is how you deploy to the wrong cluster.
   # Prefer the tailscale address: with the firewall fully closed, the tunnel is
   # the only route that reaches 6443 at all.
+  #
+  # The public-IP fallback is kept but is now an announced degradation rather than a
+  # silent one. It used to be reached on every re-run (ts_ip was unset outside the
+  # install branch) and it writes a kubeconfig pointing at a port the firewall drops —
+  # which looks like a broken cluster, not a broken address.
+  if [[ -z "$ts_ip" ]]; then
+    echo "      ! No tailscale address — falling back to the public IP $public_ip."
+    echo "        The firewall drops 6443 there, so this kubeconfig will time out."
+    echo "        Fix tailscale and re-run rather than trusting the file below."
+  fi
   kube_addr="${ts_ip:-$public_ip}"
   sed -e "s|https://127.0.0.1:6443|https://${kube_addr}:6443|" \
       -e "s|name: default|name: ${KUBE_CONTEXT_NAME}|g" \
@@ -482,12 +636,13 @@ run_server_bootstrap() {
   echo "   service, reached directly over the tailscale subnet route below — no"
   echo "   port-forward, because the route makes 10.43.0.0/16 addressable."
   echo ""
-  echo "3. Advertise the cluster CIDR as a tailscale subnet route, ON THIS SERVER:"
+  echo "3. APPROVE the subnet route in the tailscale admin console:"
   echo ""
-  echo "     tailscale up --advertise-routes=10.43.0.0/16 --accept-dns=false"
+  echo "     Machines -> $hostname_here -> Subnets -> approve $K3S_SERVICE_CIDR"
   echo ""
-  echo "   Then APPROVE it in the tailscale admin console (Machines -> this host ->"
-  echo "   Edit route settings). Nothing works until it is approved."
+  echo "   The route was advertised by step [1/3] of this script. Advertising is the"
+  echo "   half a machine can do for itself; approval is a tailnet-wide decision and"
+  echo "   is the one step here that cannot be automated from the host."
   echo ""
   echo "   This is what lets a laptop reach the datastores at their pinned ClusterIPs"
   echo "   (10.43.0.100/.101 on dev, .110/.111 on prod). Every dev-tier config in"
@@ -617,6 +772,52 @@ run_member_bootstrap() {
     return 0
   }
 
+  # Tailscale — for EVERY preset, including the frontend-only one.
+  #
+  # Not a convenience. Every mc2-dev.com hostname resolves to the server's TAILNET
+  # address (auth-dev.mc2-dev.com -> 100.123.167.112), and the Hetzner firewall drops
+  # the public IP outright, so a machine that is not on the tailnet cannot reach the
+  # dev tier at all — not the APIs, not the gateway, not Grafana, ArgoCD or the
+  # workflows UI. It is not a degraded experience, it is nothing resolving to
+  # anything reachable.
+  #
+  # This is why it sits OUTSIDE the preset conditionals. The frontend path is the
+  # lighter one — no Docker, no kubectl, no kubeconfig — precisely because those
+  # repos run against the deployed dev tier, which makes the tunnel the one thing a
+  # frontend developer cannot do without.
+  #
+  # A cask, not a formula: the macOS client is a GUI app that ships the CLI as a
+  # symlink, so `brew install tailscale` (the formula) would install a daemon that
+  # fights the app. brew_offer cannot express that, hence the separate block.
+  if ! command -v tailscale >/dev/null 2>&1 && [[ ! -d /Applications/Tailscale.app ]]; then
+    if command -v brew >/dev/null 2>&1; then
+      read -rp "      tailscale isn't installed (the only route to the dev tier). Install it now? [y/N] " ans
+      if [[ "$ans" =~ ^[Yy]$ ]]; then
+        run_with_spinner "brew install --cask tailscale" brew install --cask tailscale
+      fi
+    else
+      echo "      ! tailscale isn't installed and Homebrew is missing."
+      echo "        Install from https://tailscale.com/download/mac — without it the"
+      echo "        dev tier is unreachable, and the failure looks like DNS."
+    fi
+  else
+    echo "      ✓ tailscale present"
+  fi
+
+  # Installed is not the same as joined, and the difference is invisible until a
+  # request times out. `tailscale status` exits non-zero when the daemon is not
+  # logged in, which is the check that distinguishes the two.
+  if command -v tailscale >/dev/null 2>&1 && ! tailscale status >/dev/null 2>&1; then
+    echo "      ! tailscale is installed but not signed in."
+    echo "        Open Tailscale and sign in, then ask an admin to invite this machine"
+    echo "        to the tailnet. Verify with:  tailscale status"
+  fi
+
+  # gitleaks, for every preset too. Step [4/5] installs a pre-commit hook into every
+  # repo; without the binary that hook skips itself and says so, which is a scanner in
+  # name only. Every repo can stage a credential, so this is not preset-specific.
+  brew_offer gitleaks gitleaks "blocks a commit that stages a credential"
+
   if [[ "$NEEDS_CLUSTER" == true ]]; then
     brew_offer kubectl kubectl "talks to the cluster"
     brew_offer helm    helm    "installs Traefik locally"
@@ -660,9 +861,24 @@ run_member_bootstrap() {
   echo ""
 
   MISSING=()
-  FOUND=(git Homebrew)
+  FOUND=(git Homebrew tailscale gitleaks)
   command -v git >/dev/null 2>&1 || MISSING+=("git
         Run: xcode-select --install")
+  # Listed unconditionally, above the preset blocks, because it gates every preset:
+  # the dev tier resolves only on the tailnet.
+  if ! command -v gitleaks >/dev/null 2>&1; then
+    MISSING+=("gitleaks
+        Run: brew install gitleaks
+        The pre-commit hook installed in every repo skips itself without it. Real
+        credentials have already reached this org's git history once.")
+  fi
+  if ! command -v tailscale >/dev/null 2>&1 && [[ ! -d /Applications/Tailscale.app ]]; then
+    MISSING+=("tailscale
+        Run: brew install --cask tailscale
+        Then open it, sign in, and have an admin add this machine to the tailnet.
+        Every mc2-dev.com host resolves to a tailnet address — without this the
+        dev tier is unreachable and the symptom looks like broken DNS.")
+  fi
   command -v brew >/dev/null 2>&1 || MISSING+=("Homebrew
         Needed for the tools above. Install: https://brew.sh")
 
@@ -752,6 +968,26 @@ run_member_bootstrap() {
     GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes" \
       run_with_spinner "$repo" git clone --quiet "git@github.com:${GITHUB_OWNER}/${repo}.git" "$dest"
   done
+  echo ""
+
+  # Git hooks, via the ONE shared directory in mc2-wrappers rather than a copy per repo.
+  #
+  # An earlier version of this script wrote a pre-commit file into each .git/hooks. That
+  # was the wrong home: .git/hooks is untracked, so the logic was unversioned, and this
+  # script runs ONCE on a new machine — an improved hook would never have reached anyone
+  # already set up. `core.hooksPath` points at a committed directory instead, so updating
+  # a hook is a git pull.
+  #
+  # Delegated to virtualize because that is the tool run repeatedly (`--setup` calls
+  # --install-hooks too), which is what makes the mechanism self-healing. Doing it here as
+  # well matters for one reason: a new member can commit before they ever run virtualize.
+  if [[ -x "$MC2_DIR/mc2-wrappers/virtualize" ]]; then
+    echo "      Installing git hooks (core.hooksPath -> mc2-wrappers/hooks)"
+    "$MC2_DIR/mc2-wrappers/virtualize" --install-hooks 2>&1 | sed 's/^/      /'
+  else
+    echo "      ! mc2-wrappers not cloned — no git hooks installed."
+    echo "        After cloning it: virtualize --install-hooks"
+  fi
   echo ""
 
   echo "[5/5] Linking CLI tools"
