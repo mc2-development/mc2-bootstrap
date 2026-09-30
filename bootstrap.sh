@@ -37,7 +37,7 @@ SSH_KEY="$HOME/.ssh/id_ed25519"
 # An ACCIDENT GUARD, not a security control — it stops --server running on a machine
 # that should have been --member. Change it with:
 #   printf '%s' 'your passphrase' | shasum -a 256
-SERVER_PASSPHRASE_SHA256="61c41eff37596494eb833b148164f5e297c10c5b02ca33d57fe2f34fc1dd97c3"
+SERVER_PASSPHRASE_SHA256="f8c87098a3fdd32415f48701a4d497433f0beaad98654a873b8755d424158ded"
 
 # Named for the role, not the vendor: "hetzner" here made a provider change a rename
 # across five files in four repos.
