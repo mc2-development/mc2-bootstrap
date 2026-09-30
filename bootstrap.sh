@@ -88,7 +88,7 @@ K3S_SERVICE_CIDR="10.43.0.0/16"
 MODE="member"
 IP_OVERRIDE=""
 usage() {
-  cat << 'EOF'
+  cat <<'EOF'
 Usage: bootstrap.sh [--member | --server] [options]
 
 Modes:
@@ -106,25 +106,44 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --server) MODE="server"; shift ;;
-    --member) MODE="member"; shift ;;
-    --ip)     IP_OVERRIDE="$2"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "Unknown option: $1"; echo ""; usage; exit 1 ;;
+    --server)
+      MODE="server"
+      shift
+      ;;
+    --member)
+      MODE="member"
+      shift
+      ;;
+    --ip)
+      IP_OVERRIDE="$2"
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo ""
+      usage
+      exit 1
+      ;;
   esac
 done
 
 # Runs a command in the background with a spinner, prints a check/cross when done.
 run_with_spinner() {
-  local msg="$1"; shift
-  local log; log="$(mktemp)"
+  local msg="$1"
+  shift
+  local log
+  log="$(mktemp)"
   "$@" >"$log" 2>&1 &
   local pid=$!
   local frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
   local i=0
   while kill -0 "$pid" 2>/dev/null; do
     printf "\r      %s %s" "${frames:$i:1}" "$msg"
-    i=$(( (i + 1) % ${#frames} ))
+    i=$(((i + 1) % ${#frames}))
     sleep 0.1
   done
   # `wait` under `set -e` would abort the script on a non-zero child before the
@@ -171,7 +190,10 @@ checkbox_menu() {
 
   cur=-1
   for ((i = 0; i < n; i++)); do
-    if [[ ${locked[i]} -eq 0 ]]; then cur=$i; break; fi
+    if [[ ${locked[i]} -eq 0 ]]; then
+      cur=$i
+      break
+    fi
   done
 
   draw() {
@@ -182,7 +204,8 @@ checkbox_menu() {
       fi
       local mark=" "
       [[ ${checked[i]} -eq 1 ]] && mark="x"
-      local note; note="$(repo_note "${items[i]}")"
+      local note
+      note="$(repo_note "${items[i]}")"
       if [[ $i -eq $cur ]]; then
         printf "\r\033[K  > [%s] %s\033[2m%s\033[0m\n" "$mark" "${items[i]}" "$note"
       else
@@ -206,11 +229,17 @@ checkbox_menu() {
       read -rsn2 key2
       if [[ $key2 == "[A" ]]; then
         for ((i = cur - 1; i >= 0; i--)); do
-          [[ ${locked[i]} -eq 0 ]] && { cur=$i; break; }
+          [[ ${locked[i]} -eq 0 ]] && {
+            cur=$i
+            break
+          }
         done
       elif [[ $key2 == "[B" ]]; then
         for ((i = cur + 1; i < n; i++)); do
-          [[ ${locked[i]} -eq 0 ]] && { cur=$i; break; }
+          [[ ${locked[i]} -eq 0 ]] && {
+            cur=$i
+            break
+          }
         done
       fi
     elif [[ $key == " " ]]; then
@@ -231,7 +260,7 @@ checkbox_menu() {
 }
 
 banner() {
-  cat << 'EOF'
+  cat <<'EOF'
                             ░██████
                            ░██   ░██
 ░█████████████   ░███████        ░██
@@ -457,7 +486,7 @@ run_server_bootstrap() {
   echo ""
   echo "      Raising inotify limits (128 instances is a desktop default)"
   _sysctl_file=/etc/sysctl.d/99-mc2-inotify.conf
-  printf 'fs.inotify.max_user_instances = 8192\nfs.inotify.max_user_watches = 524288\n' > "$_sysctl_file"
+  printf 'fs.inotify.max_user_instances = 8192\nfs.inotify.max_user_watches = 524288\n' >"$_sysctl_file"
   sysctl --system >/dev/null 2>&1 || true
   _inst="$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)"
   _watch="$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)"
@@ -480,7 +509,7 @@ run_server_bootstrap() {
   # the setting with it.
   echo "      Capping the systemd journal (default is 10% of /var)"
   mkdir -p /etc/systemd/journald.conf.d
-  printf '[Journal]\nSystemMaxUse=500M\nSystemKeepFree=2G\n' > /etc/systemd/journald.conf.d/99-mc2.conf
+  printf '[Journal]\nSystemMaxUse=500M\nSystemKeepFree=2G\n' >/etc/systemd/journald.conf.d/99-mc2.conf
   systemctl restart systemd-journald >/dev/null 2>&1 || true
   echo "      ✓ journal capped at 500M (/etc/systemd/journald.conf.d/99-mc2.conf)"
 
@@ -507,7 +536,7 @@ run_server_bootstrap() {
     echo "            - \"image-gc-high-threshold=70\""
     echo "            - \"image-gc-low-threshold=60\""
   else
-    printf 'kubelet-arg:\n  - "image-gc-high-threshold=70"\n  - "image-gc-low-threshold=60"\n' > "$_k3s_cfg"
+    printf 'kubelet-arg:\n  - "image-gc-high-threshold=70"\n  - "image-gc-low-threshold=60"\n' >"$_k3s_cfg"
     echo "      ✓ image GC set to prune at 70%% / down to 60%% ($_k3s_cfg)"
     if systemctl is-active --quiet k3s 2>/dev/null; then
       echo "      ! k3s is already running — this file is read at startup, so the"
@@ -560,7 +589,7 @@ run_server_bootstrap() {
     fi
     run_with_spinner "curl get.k3s.io | sh ($K3S_VERSION)" \
       env INSTALL_K3S_VERSION="$K3S_VERSION" \
-          INSTALL_K3S_EXEC="$tls_sans --secrets-encryption" \
+      INSTALL_K3S_EXEC="$tls_sans --secrets-encryption" \
       bash -c 'curl -sfL https://get.k3s.io | sh -'
 
     run_with_spinner "waiting for the node to become Ready" \
@@ -604,11 +633,11 @@ run_server_bootstrap() {
   fi
   kube_addr="${ts_ip:-$public_ip}"
   sed -e "s|https://127.0.0.1:6443|https://${kube_addr}:6443|" \
-      -e "s|name: default|name: ${KUBE_CONTEXT_NAME}|g" \
-      -e "s|cluster: default|cluster: ${KUBE_CONTEXT_NAME}|g" \
-      -e "s|user: default|user: ${KUBE_CONTEXT_NAME}|g" \
-      -e "s|current-context: default|current-context: ${KUBE_CONTEXT_NAME}|g" \
-      /etc/rancher/k3s/k3s.yaml > "$KUBECONFIG_OUT"
+    -e "s|name: default|name: ${KUBE_CONTEXT_NAME}|g" \
+    -e "s|cluster: default|cluster: ${KUBE_CONTEXT_NAME}|g" \
+    -e "s|user: default|user: ${KUBE_CONTEXT_NAME}|g" \
+    -e "s|current-context: default|current-context: ${KUBE_CONTEXT_NAME}|g" \
+    /etc/rancher/k3s/k3s.yaml >"$KUBECONFIG_OUT"
   chmod 600 "$KUBECONFIG_OUT"
   echo "      ✓ $KUBECONFIG_OUT (context: $KUBE_CONTEXT_NAME)"
   echo ""
@@ -712,28 +741,40 @@ run_member_bootstrap() {
 
   ROLE="everything"
   case "$_role" in
-    1) ROLE="frontend"; REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}") ;;
-    2) ROLE="backend";  REPOS=("${BASE_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
+    1)
+      ROLE="frontend"
+      REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}")
+      ;;
+    2)
+      ROLE="backend"
+      REPOS=("${BASE_REPOS[@]}" "${BACKEND_REPOS[@]}")
+      ;;
     3) REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
-    4) echo "  (↑/↓ move, space toggle, enter confirm)"
-       echo ""
-       checkbox_menu "${REPOS[@]}"
-       REPOS=("${CHECKED_ITEMS[@]}")
-       ROLE="custom" ;;
-    *) echo "  Unrecognised choice — cloning everything."
-       REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}" "${BACKEND_REPOS[@]}") ;;
+    4)
+      echo "  (↑/↓ move, space toggle, enter confirm)"
+      echo ""
+      checkbox_menu "${REPOS[@]}"
+      REPOS=("${CHECKED_ITEMS[@]}")
+      ROLE="custom"
+      ;;
+    *)
+      echo "  Unrecognised choice — cloning everything."
+      REPOS=("${BASE_REPOS[@]}" "${FRONTEND_REPOS[@]}" "${BACKEND_REPOS[@]}")
+      ;;
   esac
   echo "  Selected: $ROLE (${#REPOS[@]} repositories)"
   echo ""
 
   # Which toolchains the selection actually needs. Derived from the repos rather than
   # the role label, so "choose myself" gets the same treatment as a preset.
-  NEEDS_PYTHON=false; NEEDS_RUST=false; NEEDS_NODE=false
+  NEEDS_PYTHON=false
+  NEEDS_RUST=false
+  NEEDS_NODE=false
   for repo in "${REPOS[@]}"; do
     case "$repo" in
-      mc2-operation-api|mc2-accounting-api|mc2-agent-api|mc2-crons|mc2-python|mc2-mailer-api) NEEDS_PYTHON=true ;;
-      mc2-gateway|mc2-account-api|mc2-core) NEEDS_RUST=true ;;
-      mc2-ui|mc2-operation-frontend|mc2-accounting-frontend|mc2-platform-frontend) NEEDS_NODE=true ;;
+      mc2-operation-api | mc2-accounting-api | mc2-agent-api | mc2-crons | mc2-python | mc2-mailer-api) NEEDS_PYTHON=true ;;
+      mc2-gateway | mc2-account-api | mc2-core) NEEDS_RUST=true ;;
+      mc2-ui | mc2-operation-frontend | mc2-accounting-frontend | mc2-platform-frontend) NEEDS_NODE=true ;;
     esac
   done
   # Only a backend checkout runs the cluster locally. A frontend developer points at
@@ -818,14 +859,32 @@ run_member_bootstrap() {
   # name only. Every repo can stage a credential, so this is not preset-specific.
   brew_offer gitleaks gitleaks "blocks a commit that stages a credential"
 
+  # The formatter stack the hooks run, and the same argument as gitleaks applies to
+  # every one of them: the hooks gate on `command -v <tool>`, so a machine without
+  # them does not get a warning, it gets a hook that quietly does nothing — and the
+  # first thing to notice is CI, after the push, which is the whole failure mode these
+  # hooks exist to prevent.
+  #
+  # Every version is pinned in a config that CI pins identically: yamlfmt 0.21.0 and
+  # taplo 0.10.0 are what the workflows install, and shfmt 3.14.1 is what brew ships
+  # today. A formatter at a different version is a formatter with a different opinion,
+  # so if brew ever moves ahead of CI, CI is the one to change — not this.
+  #
+  # Not preset-specific. Every repo has YAML, most have TOML, and all of them have at
+  # least a ci.sh, so there is no preset that needs none of these.
+  brew_offer shellcheck shellcheck "lints the shell scripts before a push"
+  brew_offer shfmt shfmt "formats the shell scripts (pre-commit rewrites and re-stages)"
+  brew_offer yamlfmt yamlfmt "formats YAML — k8s manifests, workflows, config templates"
+  brew_offer taplo taplo "formats TOML — Cargo.toml and pyproject.toml"
+
   if [[ "$NEEDS_CLUSTER" == true ]]; then
     brew_offer kubectl kubectl "talks to the cluster"
-    brew_offer helm    helm    "installs Traefik locally"
+    brew_offer helm helm "installs Traefik locally"
     # The pipeline runs in the cluster, so reading it means talking to the cluster.
     # Both CLIs work off ~/.kube/hetzner.yaml — argo needs nothing else; argocd wants
     # one `argocd login argocd.mc2-dev.com` whose session then persists.
-    brew_offer argo    argo    "reads the build pipeline (argo workflows)"
-    brew_offer argocd  argocd  "reads what is deployed (argo cd)"
+    brew_offer argo argo "reads the build pipeline (argo workflows)"
+    brew_offer argocd argocd "reads what is deployed (argo cd)"
   fi
 
   # The language toolchains virtualize --setup shells out to. Without these it fails
@@ -1055,15 +1114,16 @@ run_member_bootstrap() {
     # a frontend developer needs an app and a network, not Kubernetes on their Mac.
     # Name a project that was actually cloned — a custom selection may not include
     # platform-frontend, and an example pointing at a missing directory is noise.
-    _example_app="mc2-platform-frontend"; _example_port=":3001"
+    _example_app="mc2-platform-frontend"
+    _example_port=":3001"
     for _candidate in mc2-platform-frontend mc2-operation-frontend mc2-accounting-frontend mc2-ui; do
       if [[ -d "$MC2_DIR/$_candidate" ]]; then
         _example_app="$_candidate"
         case "$_candidate" in
-          mc2-platform-frontend)   _example_port=":3001" ;;
-          mc2-operation-frontend)  _example_port=":3000" ;;
+          mc2-platform-frontend) _example_port=":3001" ;;
+          mc2-operation-frontend) _example_port=":3000" ;;
           mc2-accounting-frontend) _example_port=":3002" ;;
-          mc2-ui)                  _example_port=":6006, Storybook" ;;
+          mc2-ui) _example_port=":6006, Storybook" ;;
         esac
         break
       fi
@@ -1095,5 +1155,5 @@ run_member_bootstrap() {
 
 case "$MODE" in
   server) run_server_bootstrap ;;
-  *)      run_member_bootstrap ;;
+  *) run_member_bootstrap ;;
 esac

@@ -38,7 +38,26 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: yamlfmt
-        run: yamlfmt -lint .
+        run: yamlfmt -lint '**/*.yaml' '**/*.yml'
+
+      - name: Install shfmt
+        # Same `go install` + $GITHUB_PATH pair as yamlfmt above, and pinned to the
+        # version brew ships, so a developer's shfmt and this one cannot disagree about
+        # what "formatted" means.
+        run: |
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.14.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: shfmt
+        # -d, not -w: CI reports, it never rewrites. -i 2 because these scripts have zero
+        # tabs, and -ci/-bn because they already indent case branches and already start
+        # continuation lines with && — both flags pin the existing style.
+        #
+        # NOT -kp. It claims to keep column alignment and instead cascades each element's
+        # old column when it splits a one-line case branch, turning it into a staircase.
+        # It also reports fewer changed lines than the flags above, so a churn count alone
+        # recommends it. Do not.
+        run: shfmt -i 2 -ci -bn -d bootstrap.sh
 
       - name: shellcheck
         run: shellcheck --severity=warning bootstrap.sh
