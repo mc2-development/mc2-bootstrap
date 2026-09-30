@@ -826,6 +826,8 @@ run_member_bootstrap() {
   brew_offer yamlfmt yamlfmt "formats YAML — k8s manifests, workflows, config templates"
   brew_offer taplo taplo "formats TOML — Cargo.toml and pyproject.toml"
   brew_offer terraform terraform "formats and validates mc2-terraform (its CI checks both)"
+  # Its own tap, not homebrew-core — `brew install tflint` finds nothing.
+  brew_offer tflint terraform-linters/tap/tflint "lints mc2-terraform (pre-push runs it)"
 
   if [[ "$NEEDS_CLUSTER" == true ]]; then
     brew_offer kubectl kubectl "talks to the cluster"
