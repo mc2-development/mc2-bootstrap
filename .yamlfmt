@@ -13,8 +13,47 @@
 # Anything a package manager owns, never a person — running a formatter inside
 # node_modules is pointless work today and a correctness risk the day some vendored
 # package's own YAML happens to be sensitive to exact formatting.
+#
+# pnpm-lock.yaml is the same principle, learned the expensive way: `virtualize
+# --format` (named --format-all at the time) walked into it and (a) stripped its
+# leading `---` — a stylistic,
+# no-second-document marker that yamlfmt's document-start preservation does not
+# treat as worth keeping, unlike the genuinely multi-document k8s manifests this
+# config was tuned against — and (b) rewrote one long dependency key into YAML's
+# explicit `? key` / `: value` complex-mapping form, which pnpm's own writer never
+# produces and its lockfile parser is not guaranteed to accept the same way. Caught
+# by reviewing the diff before it was ever committed, not by anything automatic.
+#
+# The fix is exclusion, not tuning yamlfmt harder to be a no-op here: this file is
+# machine-owned and machine-read by a specific tool with its own format
+# expectations, the same category as node_modules, not something a general YAML
+# formatter should touch regardless of how close it can get to a clean diff.
+# The exclude patterns above use ** (any depth), which yamlfmt does NOT treat as a
+# doublestar glob by default — `-print_conf` shows `doublestar: false` even with
+# these patterns present, and the standard matcher was silently letting both
+# patterns fall through, which is exactly how a lockfile got reformatted despite
+# the node_modules exclude apparently working (it did not; both were unenforced).
+#
+# The two overlay kustomizations are the third instance of the same category, and
+# the one that would have broken a deploy. mc2-k8s's pipeline runs `kustomize edit
+# set image` in overlays/$ENV and commits that file, and kustomize re-serialises
+# the WHOLE file with indentless sequences — the opposite of indentless_arrays:
+# false below. Measured, not assumed: running it in the alpine/k8s:1.36.4 image the
+# pipeline uses rewrote 226 lines of overlays/dev/kustomization.yaml. Left in
+# scope, every automated deploy would land a bot commit that fails this repo's own
+# yamlfmt check, so the merge button would go red on a deploy nobody could fix
+# without reverting the formatter. Only dev and prod are excluded, because only
+# those two are ever passed to `kustomize edit`; the rest of overlays/ is
+# hand-written and stays formatted.
+#
+# No pattern here matches anything in the other seventeen repos, so this file stays
+# byte-identical across the workspace.
+doublestar: true
 exclude:
   - "**/node_modules/**"
+  - "**/pnpm-lock.yaml"
+  - "**/overlays/dev/kustomization.yaml"
+  - "**/overlays/prod/kustomization.yaml"
 
 formatter:
   type: basic
