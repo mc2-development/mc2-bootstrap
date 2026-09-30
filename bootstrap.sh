@@ -11,37 +11,15 @@
 #                        GitHub SSH, no Homebrew, no CLI symlinks. A server holding
 #                        the database has no business holding a git checkout.
 #
-# Server mode runs ON the box. The repos are private, so there is no curl|bash URL;
-# copy this one file over and run it from a shell on the server:
+# Normally nobody puts this on the box: Terraform registers it as the provider's
+# post-install hook, which fetches it at a pinned commit. Hence MC2_UNATTENDED — see
+# usage() for the env contract. This repo is PUBLIC; nothing secret goes in it.
 #
-#   scp mc2-bootstrap/bootstrap.sh root@<server-ip>:/tmp/
-#   ssh root@<server-ip>
+# Interactively (repair, or a provider Terraform does not cover):
+#   scp bootstrap.sh root@<ip>:/tmp/ && ssh -t root@<ip>   # -t, or the passphrase refuses
 #   bash /tmp/bootstrap.sh --server
-#
-# Provisioning one box once is not worth automating, and if k3s fails you want to
-# already be on the machine with journalctl. The one-liner form is for later, when
-# this is repeatable (a rebuild, a second node, CI) — and it needs a TTY, or the
-# passphrase prompt echoes in clear:
-#
-#   ssh -t root@<ip> 'bash /tmp/bootstrap.sh --server'
-#   ssh root@<ip> 'MC2_SERVER_PASSPHRASE=... bash /tmp/bootstrap.sh --server'
-# -u as well as -e: an unset variable is an error rather than an empty string.
-#
-# Not a style preference — it is what catches the class of bug this codebase has
-# already produced: create-secrets.sh composed a DSN around an unset
-# ACCOUNT_SVC_PASSWORD and the result was still non-empty, so the `require` guard
-# written specifically to prevent that passed it.
-#
-# Worth being precise about what -u does NOT catch, so it is not trusted too far: a
-# reference written ${var:-default} is legal with var unset, so the $ts_ip bug below
-# (read on a path where it was only assigned in the other branch of an if) was invisible
-# to it. That one needed the variable hoisted, not a shell flag.
-#
-# `pipefail` is deliberately NOT set here yet. There are ~27 pipelines across these
-# tools whose first command is allowed to fail — the config-discovery idiom
-# `ls <glob> 2>/dev/null | grep -v example` is the clearest, and it fails on an empty
-# directory by design. Turning pipefail on without auditing each one trades a silent
-# bug for a loud one in working code. It is worth doing as its own pass.
+# No pipefail: ~27 pipelines here rely on the first command being allowed to fail
+# (`ls <glob> 2>/dev/null | grep -v example`). Turning it on needs its own pass.
 set -eu
 
 GITHUB_OWNER="${GITHUB_OWNER:-mc2-development}"
@@ -56,33 +34,31 @@ SSH_KEY="$HOME/.ssh/id_ed25519"
 
 # --- server mode settings -----------------------------------------------------
 
-# SHA-256 of the passphrase that unlocks --server. Only the hash lives here, so
-# reading this file does not hand anyone the phrase.
-#
-# This is an ACCIDENT GUARD, not a security control: anyone with root on a box can
-# edit the check out. Its whole job is to stop a teammate running --server by
-# mistake on a machine that should have been --member.
-#
-# To change it:  printf '%s' 'your passphrase' | shasum -a 256
+# An ACCIDENT GUARD, not a security control — it stops --server running on a machine
+# that should have been --member. Change it with:
+#   printf '%s' 'your passphrase' | shasum -a 256
 SERVER_PASSPHRASE_SHA256="61c41eff37596494eb833b148164f5e297c10c5b02ca33d57fe2f34fc1dd97c3"
 
-KUBECONFIG_OUT="/root/mc2-hetzner.kubeconfig"
-KUBE_CONTEXT_NAME="mc2-hetzner"
+# Named for the role, not the vendor: "hetzner" here made a provider change a rename
+# across five files in four repos.
+KUBECONFIG_OUT="/root/mc2-server.kubeconfig"
+KUBE_CONTEXT_NAME="mc2-server"
 
-# Pinned so a rebuild, or a second node added months from now, reproduces THIS
-# cluster rather than whatever "stable" happens to point at that day. Unpinned,
-# the install line is a moving target and two nodes can end up on different
-# minor versions.
-#
-# Update path: check the channel list, bump, re-provision a throwaway box, test.
+# Unattended there is no terminal, so this log is the only record of the run.
+SERVER_LOG="/var/log/mc2-bootstrap.log"
+
+# Pinned so a rebuild reproduces THIS cluster, not whatever "stable" points at today.
 #     curl -s https://update.k3s.io/v1-release/channels | grep -o 'v1[^"]*k3s1' | head
 K3S_VERSION="v1.36.4+k3s1"
 
-# k3s's default service CIDR, advertised to the tailnet as a subnet route so a
-# laptop can dial a ClusterIP directly (10.43.0.100:5432 for the database,
-# 10.43.0.101:6379 for redis) instead of holding a port-forward open. Declared
-# here because two places need it to agree: the route advertised below, and the
-# pinned ClusterIPs in mc2-k8s/overlays/<env>/data/clusterips.yaml.
+UNATTENDED="${MC2_UNATTENDED:-}"
+
+# The tailnet device name, decided by the caller rather than by whatever the machine
+# calls itself (srv2023513, here). Every mc2-dev.com hostname resolves to this device.
+MC2_TS_HOSTNAME="${MC2_TS_HOSTNAME:-mc2}"
+
+# Advertised to the tailnet so a laptop dials a ClusterIP directly. Must agree with
+# the pinned ClusterIPs in mc2-k8s/overlays/<env>/data/clusterips.yaml.
 K3S_SERVICE_CIDR="10.43.0.0/16"
 
 MODE="member"
@@ -99,8 +75,18 @@ Options:
   --ip <address>    Server mode: override the auto-detected public IP.
   -h, --help        Show this message.
 
-Server mode reads MC2_SERVER_PASSPHRASE from the environment if set, so it can run
-unattended; otherwise it prompts.
+Server mode, unattended. This is how Terraform runs it as the provider's post-install
+hook; interactively none of it is needed. A value that is missing is a refusal, not a
+default — every one of these replaces a guard, and a guard that defaults is not one.
+
+  MC2_UNATTENDED=1            No prompts. No spinner (it animates into the log with
+                              \r forever). Everything tee'd to /var/log/mc2-bootstrap.log.
+  MC2_SERVER_PASSPHRASE=...   The accident guard. Also honoured interactively.
+  MC2_CONFIRM_HOSTNAME=...    Must equal `hostname`, replacing typing it back.
+  MC2_TS_AUTHKEY=tskey-...    Pre-authorized, tagged, single-use. Replaces the browser
+                              auth URL — the one reason this script used to need a human.
+  MC2_DISABLE_UFW=1           Answers the ufw prompt. Unset means leave ufw alone, which
+                              on a k3s node is a decision, so it is stated rather than assumed.
 EOF
 }
 
@@ -135,6 +121,20 @@ done
 run_with_spinner() {
   local msg="$1"
   shift
+
+  # No terminal, no spinner: \r frames turn a log file into megabytes of carriage
+  # returns around the one line anybody needs.
+  if [[ -n "$UNATTENDED" || ! -t 1 ]]; then
+    echo "      · $msg"
+    if "$@" >>"${SERVER_LOG:-/dev/null}" 2>&1; then
+      echo "      ✓ $msg"
+      return 0
+    fi
+    echo "      ✗ $msg (failed)"
+    tail -40 "${SERVER_LOG:-/dev/null}" 2>/dev/null || true
+    exit 1
+  fi
+
   local log
   log="$(mktemp)"
   "$@" >"$log" 2>&1 &
@@ -146,9 +146,8 @@ run_with_spinner() {
     i=$(((i + 1) % ${#frames}))
     sleep 0.1
   done
-  # `wait` under `set -e` would abort the script on a non-zero child before the
-  # failure branch below could run — so the log would never be printed and the
-  # temp file would leak. Capture the status instead of letting errexit have it.
+  # Capture the status: `wait` under `set -e` would abort before the failure branch
+  # below could print the log.
   local status=0
   wait "$pid" || status=$?
   if [[ $status -eq 0 ]]; then
@@ -289,9 +288,17 @@ sha256_of() {
 run_server_bootstrap() {
   banner "Server bootstrap (k3s)"
 
+  # Opened before the guards, not after: a refusal is what someone reads the log for,
+  # and unattended no terminal saw it.
+  if [[ -n "$UNATTENDED" ]]; then
+    mkdir -p "$(dirname "$SERVER_LOG")"
+    exec > >(tee -a "$SERVER_LOG") 2>&1
+    echo "=== bootstrap.sh --server (unattended) $(date -u +%FT%TZ) ==="
+  fi
+
   # --- guard 1: platform -------------------------------------------------------
-  # Checked before the passphrase: running --server on a Mac is the likeliest
-  # mistake, and it deserves a clearer message than "wrong passphrase".
+  # Before the passphrase: --server on a Mac is the likeliest mistake and deserves a
+  # better message than "wrong passphrase".
   if [[ "$(uname -s)" != "Linux" ]]; then
     echo "Refusing: --server provisions a Linux k3s host, but this is $(uname -s)."
     echo "Did you mean --member (the developer Mac setup)?"
@@ -307,11 +314,14 @@ run_server_bootstrap() {
   local supplied
   if [[ -n "${MC2_SERVER_PASSPHRASE:-}" ]]; then
     supplied="$MC2_SERVER_PASSPHRASE"
+  elif [[ -n "$UNATTENDED" ]]; then
+    echo "Refusing: MC2_UNATTENDED is set but MC2_SERVER_PASSPHRASE is not."
+    echo "  Unattended, every prompt must be answered by a value. Pass it, or drop"
+    echo "  MC2_UNATTENDED and run this from a terminal."
+    exit 1
   else
-    # `read -s` can only disable echo when stdin is a terminal. Plain
-    # `ssh host 'bash script'` does NOT allocate one, so the passphrase would be
-    # typed in clear on screen — it still works, which is exactly why it would go
-    # unnoticed. Refuse and name the fix rather than leak it.
+    # `read -s` cannot disable echo without a terminal, and `ssh host 'bash …'`
+    # allocates none — the passphrase would be typed in clear. Refuse instead.
     if [[ ! -t 0 ]]; then
       echo "Refusing: no terminal attached, so the passphrase would be echoed in clear."
       echo ""
@@ -337,10 +347,9 @@ run_server_bootstrap() {
   if [[ -n "$IP_OVERRIDE" ]]; then
     public_ip="$IP_OVERRIDE"
   else
-    # Hetzner's metadata service is authoritative on a Hetzner box; fall back to
-    # asking the outside world, then to whatever the default route uses.
-    public_ip="$(curl -sf --max-time 3 http://169.254.169.254/hetzner/v1/metadata/public-ipv4 2>/dev/null || true)"
-    [[ -z "$public_ip" ]] && public_ip="$(curl -sf --max-time 5 https://ifconfig.me 2>/dev/null || true)"
+    # No provider metadata service: the Hetzner-specific probe that used to come
+    # first cost three seconds of timeout on every other provider.
+    public_ip="$(curl -sf --max-time 5 https://ifconfig.me 2>/dev/null || true)"
     [[ -z "$public_ip" ]] && public_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
   fi
 
@@ -356,7 +365,21 @@ run_server_bootstrap() {
   echo "      public IP  $public_ip"
   echo ""
   echo "This installs a Kubernetes control plane and its bundled Traefik."
-  read -rp "Type the hostname to confirm: " typed
+
+  # The guard is kept, not skipped: the caller still names the machine it means, just
+  # in advance. Terraform fills it from the VPS's own `hostname`.
+  local typed
+  if [[ -n "$UNATTENDED" ]]; then
+    typed="${MC2_CONFIRM_HOSTNAME:-}"
+    if [[ -z "$typed" ]]; then
+      echo "Refusing: MC2_UNATTENDED is set but MC2_CONFIRM_HOSTNAME is not."
+      echo "  Set it to this machine's hostname ('$hostname_here') to confirm the target."
+      exit 1
+    fi
+    echo "      confirmed by MC2_CONFIRM_HOSTNAME=$typed"
+  else
+    read -rp "Type the hostname to confirm: " typed
+  fi
   if [[ "$typed" != "$hostname_here" ]]; then
     echo "Refusing: '$typed' does not match '$hostname_here'."
     exit 1
@@ -375,23 +398,9 @@ run_server_bootstrap() {
   fi
   echo "      ✓ curl and systemd present"
 
-  # Tailscale, installed HERE — before k3s, not after.
-  #
-  # This is the one piece of software this platform actually needs on the host, and
-  # the ordering is load-bearing twice over:
-  #
-  #   1. k3s bakes the API certificate at install time. The tailnet address can only
-  #      get into it as a --tls-san, and adding a SAN later means editing the k3s
-  #      config and restarting the server. So the interface has to exist before the
-  #      [2/3] step reads `tailscale ip -4`.
-  #   2. The Hetzner firewall is closed to everything (see step 2 of the summary at
-  #      the end). Every way into this box that is not this tunnel — kubectl, Grafana,
-  #      ArgoCD, the workflows UI, a psql client — arrives over the tailnet. A server
-  #      without tailscale is a server nobody can administer.
-  #
-  # Previously this script only DETECTED tailscale and told the operator to install it
-  # and re-run, which made a fresh provision a two-pass job where the first pass
-  # produced a certificate that had to be thrown away.
+  # Before k3s, and the order is load-bearing twice: k3s bakes its API certificate at
+  # install time and the tailnet address can only enter as a --tls-san, and with the
+  # provider firewall closed the tunnel is the only route to the host at all.
   if ! command -v tailscale >/dev/null 2>&1; then
     echo "      Installing tailscale (the only way into this host once the firewall is closed)"
     # The vendor script, not apt directly: it adds the signing key and the release
@@ -403,57 +412,78 @@ run_server_bootstrap() {
     echo "      ✓ tailscale already installed ($(tailscale version 2>/dev/null | head -1))"
   fi
 
-  # `tailscale up` is interactive by design — it prints a URL to authenticate the
-  # machine and blocks until that is done. Deliberately NOT wrapped in the spinner:
-  # the operator has to see and click that URL.
+  # Without a key `tailscale up` blocks on a browser URL — the one reason this script
+  # needed a human. An OAuth-minted key can only create TAGGED devices, so the host
+  # joins as tag:server: no key expiry to lock anyone out, and the policy can
+  # auto-approve its route. Never spinner-wrapped — the operator must see that URL.
   #
-  # --accept-dns=false is not optional on a Kubernetes node. Accepting the tailnet's
-  # DNS rewrites /etc/resolv.conf, which is what CoreDNS forwards to for anything
-  # outside the cluster — so cluster DNS starts resolving through the tunnel and
-  # in-cluster name resolution breaks in a way that looks like a CoreDNS bug.
+  # --accept-dns=false is not optional on a Kubernetes node: accepting tailnet DNS
+  # rewrites /etc/resolv.conf, which is what CoreDNS forwards to.
   _ts_routes="$(tailscale debug prefs 2>/dev/null | grep -A2 '"AdvertiseRoutes"' | grep -c "$K3S_SERVICE_CIDR" || true)"
   if tailscale status >/dev/null 2>&1 && [[ "${_ts_routes:-0}" -gt 0 ]]; then
     echo "      ✓ tailscale up, already advertising $K3S_SERVICE_CIDR"
   else
     echo ""
-    echo "      Bringing tailscale up and advertising the cluster service CIDR."
-    echo "      A URL follows — open it to authenticate this machine."
-    echo ""
-    tailscale up --advertise-routes="$K3S_SERVICE_CIDR" --accept-dns=false
-    echo ""
-    echo "      ✓ tailscale up, advertising $K3S_SERVICE_CIDR"
-    echo "      ! The route is NOT live until it is approved in the admin console:"
-    echo "        Machines -> this host -> Subnets -> approve $K3S_SERVICE_CIDR"
-    echo "        Until then a laptop can reach this host but not the ClusterIPs behind it."
+    if [[ -n "${MC2_TS_AUTHKEY:-}" ]]; then
+      echo "      Bringing tailscale up with a pre-authorized key as '$MC2_TS_HOSTNAME'."
+      tailscale up \
+        --authkey="$MC2_TS_AUTHKEY" \
+        --hostname="$MC2_TS_HOSTNAME" \
+        --advertise-routes="$K3S_SERVICE_CIDR" \
+        --accept-dns=false
+      echo ""
+      echo "      ✓ tailscale up as '$MC2_TS_HOSTNAME', advertising $K3S_SERVICE_CIDR"
+      echo "        The route is approved by the tailnet policy (autoApprovers for"
+      echo "        tag:server), which mc2-terraform/server owns. Nothing to click."
+    elif [[ -n "$UNATTENDED" ]]; then
+      echo "Refusing: MC2_UNATTENDED is set but MC2_TS_AUTHKEY is not."
+      echo "  Without a key 'tailscale up' blocks on a browser URL nobody is watching,"
+      echo "  and the run would hang until the provider's hook timed out."
+      exit 1
+    else
+      echo "      Bringing tailscale up and advertising the cluster service CIDR."
+      echo "      A URL follows — open it to authenticate this machine."
+      echo ""
+      tailscale up --hostname="$MC2_TS_HOSTNAME" --advertise-routes="$K3S_SERVICE_CIDR" --accept-dns=false
+      echo ""
+      echo "      ✓ tailscale up as '$MC2_TS_HOSTNAME', advertising $K3S_SERVICE_CIDR"
+      echo "      ! The route is NOT live until it is approved — by the tailnet policy"
+      echo "        if tag:server auto-approves it, otherwise in the admin console:"
+      echo "        Machines -> this host -> Subnets -> approve $K3S_SERVICE_CIDR"
+      echo "        Until then a laptop can reach this host but not the ClusterIPs behind it."
+    fi
   fi
 
-  # Resolved ONCE, here, because two later steps need it and they are on different
-  # branches: the --tls-san list in [2/3] (skipped entirely when k3s is already
-  # running) and the kubeconfig rewrite at the end (never skipped).
-  #
-  # That split was a live bug. ts_ip used to be assigned only inside the "k3s is not
-  # yet installed" branch, so on any RE-RUN against an existing server it was unset,
-  # and `kube_addr="${ts_ip:-$public_ip}"` silently fell back to the public IP —
-  # rewriting a working kubeconfig to an address the firewall drops, and overwriting
-  # the good file in the process. The `:-` default is exactly why no shell flag caught
-  # it.
+  # Resolved ONCE, here: two later steps need it from different branches. Assigning it
+  # inside the install branch was a live bug — on a re-run it was unset and
+  # `${ts_ip:-$public_ip}` silently rewrote a working kubeconfig to a blocked address.
   ts_ip="$(tailscale ip -4 2>/dev/null | head -1 || true)"
 
-  # ufw is on by default in some Ubuntu images and is a known k3s footgun: it
-  # filters the flannel VXLAN traffic and the pod/service CIDRs, so the cluster
-  # comes up looking healthy and then DNS and pod-to-pod networking quietly fail.
-  # We firewall at the Hetzner Cloud layer instead, which sits in front of the host
-  # and cannot break the cluster's internal networking.
+  # ufw filters flannel VXLAN and the pod/service CIDRs, so the cluster comes up
+  # looking healthy and then DNS quietly fails. Firewall at the PROVIDER layer, in
+  # front of the host, where it cannot break cluster-internal networking.
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active'; then
     echo ""
     echo "      ! ufw is active. k3s needs it off, or explicitly opened for the"
     echo "        pod (10.42.0.0/16) and service (10.43.0.0/16) CIDRs — otherwise"
     echo "        pod networking and CoreDNS break in ways that look like app bugs."
     echo ""
-    echo "        Recommended: disable ufw and firewall at the Hetzner Cloud layer"
-    echo "        (rules printed at the end of this script)."
+    echo "        Recommended: disable ufw and firewall at the PROVIDER layer, in"
+    echo "        front of the host (rules printed at the end of this script)."
     echo ""
-    read -rp "      Disable ufw now? [y/N] " ufw_ans
+    local ufw_ans
+    if [[ -n "$UNATTENDED" ]]; then
+      if [[ -z "${MC2_DISABLE_UFW:-}" ]]; then
+        echo "Refusing: ufw is active, MC2_UNATTENDED is set and MC2_DISABLE_UFW is not."
+        echo "  Leaving ufw on breaks pod networking and CoreDNS in ways that look like"
+        echo "  application bugs, so this is not something to decide by defaulting."
+        exit 1
+      fi
+      ufw_ans=y
+      echo "      answered by MC2_DISABLE_UFW"
+    else
+      read -rp "      Disable ufw now? [y/N] " ufw_ans
+    fi
     if [[ "$ufw_ans" =~ ^[Yy]$ ]]; then
       ufw --force disable
       echo "      ✓ ufw disabled"
@@ -465,24 +495,11 @@ run_server_bootstrap() {
     echo "      ✓ ufw not active"
   fi
 
-  # inotify. The kernel ships max_user_instances at 128 — a desktop number that a
-  # Kubernetes node exhausts without trying. k3s's kubelet alone holds 25-40
-  # instances watching ConfigMap and Secret volumes, and nearly every component
-  # on top is a Go program that opens more: Traefik, cert-manager, ArgoCD, Argo
-  # Workflows, Grafana, Loki, Prometheus, Alloy.
-  #
-  # Past the limit a watcher fails with "too many open files" and the loser is
-  # whichever process asked last — so the symptom lands somewhere unrelated to
-  # the cause. On this platform it was Alloy's log tailer, which then wrote its
-  # own failure into the log stream it was meant to be reading: 1,242 error lines
-  # against 2 real ones from Postgres in a day, and the database's logs simply
-  # absent from Grafana. Nothing alerted, because nothing had crashed.
-  #
-  # 8192 / 524288 are what enterprise distributions ship (OpenShift's defaults).
-  #
-  # Written to /etc/sysctl.d, NOT applied with `sysctl -w`: the latter is lost on
-  # the next reboot, which turns a fixed node into one that breaks again months
-  # later with nothing to connect it to.
+  # The kernel's 128 max_user_instances is a desktop number; kubelet alone holds
+  # 25-40. Past the limit a watcher fails with "too many open files" and the loser is
+  # whichever process asked last — here it cost the database's logs for a day, with
+  # nothing alerting because nothing crashed. 8192/524288 are OpenShift's defaults.
+  # A file in sysctl.d, not `sysctl -w`, which is lost on the next reboot.
   echo ""
   echo "      Raising inotify limits (128 instances is a desktop default)"
   _sysctl_file=/etc/sysctl.d/99-mc2-inotify.conf
@@ -498,34 +515,20 @@ run_server_bootstrap() {
     echo "        /etc/sysctl.d/*. Leaving it will cost you pod logs, silently."
   fi
 
-  # journald. The default cap is 10% of /var — about 7.5G on a 75G disk — which is a
-  # lot of headroom to hand to logs on the one filesystem that also holds every
-  # container image, the BuildKit cache and the k3s datastore. Alloy ships logs to
-  # Loki (which has its own 30-day retention), so the journal is only ever a local
-  # tail, and 500M of it is generous.
-  #
-  # A drop-in rather than an edit to journald.conf, for the same reason inotify is a
-  # file in sysctl.d: a package upgrade rewrites the main config and silently takes
-  # the setting with it.
+  # The default 10% of /var is a lot to hand to logs on the filesystem that also holds
+  # every image, the BuildKit cache and the datastore. Alloy ships to Loki, so the
+  # journal is only a local tail. A drop-in, not an edit: upgrades rewrite the main
+  # config and take the setting with it.
   echo "      Capping the systemd journal (default is 10% of /var)"
   mkdir -p /etc/systemd/journald.conf.d
   printf '[Journal]\nSystemMaxUse=500M\nSystemKeepFree=2G\n' >/etc/systemd/journald.conf.d/99-mc2.conf
   systemctl restart systemd-journald >/dev/null 2>&1 || true
   echo "      ✓ journal capped at 500M (/etc/systemd/journald.conf.d/99-mc2.conf)"
 
-  # kubelet image garbage collection. k3s inherits the kubelet defaults — prune at 85%
-  # of the disk, down to 80% — and on this box those are the wrong numbers in a way
-  # that cannot recover:
-  #
-  #   85% of 75G is ~64G, and the BuildKit layer cache is a PVC, which image GC does
-  #   not count at all. The cache alone is allowed 25G by its own gcpolicy. 64G of
-  #   images plus 25G of cache is 89G on a 75G disk, so the filesystem fills before
-  #   the kubelet has any reason to act — and a full disk takes the datastore, the
-  #   container runtime and the API server with it.
-  #
-  # 70/60 prunes at ~52G, which leaves the cache its 25G and still has room. Written
-  # to config.yaml rather than baked into INSTALL_K3S_EXEC so that re-running this
-  # script fixes an EXISTING node too, exactly like the inotify file above.
+  # The kubelet's 85%/80% defaults cannot recover here: image GC does not count the
+  # BuildKit cache PVC at all, so images plus cache fill the disk before it acts — and
+  # a full disk takes the datastore, the runtime and the API server with it. In
+  # config.yaml, not INSTALL_K3S_EXEC, so a re-run fixes an existing node too.
   echo "      Setting kubelet image-GC thresholds (defaults fill this disk)"
   mkdir -p /etc/rancher/k3s
   _k3s_cfg=/etc/rancher/k3s/config.yaml
@@ -535,9 +538,13 @@ run_server_bootstrap() {
     echo "          kubelet-arg:"
     echo "            - \"image-gc-high-threshold=70\""
     echo "            - \"image-gc-low-threshold=60\""
+    echo "          etcd-snapshot-schedule-cron: \"0 */6 * * *\""
+    echo "          etcd-snapshot-retention: 20"
   else
-    printf 'kubelet-arg:\n  - "image-gc-high-threshold=70"\n  - "image-gc-low-threshold=60"\n' >"$_k3s_cfg"
-    echo "      ✓ image GC set to prune at 70%% / down to 60%% ($_k3s_cfg)"
+    # Snapshots are local-only here. Off-server upload (etcd-s3-*) needs bucket
+    # credentials, which do not belong in a public repo — mc2-terraform writes those.
+    printf 'kubelet-arg:\n  - "image-gc-high-threshold=70"\n  - "image-gc-low-threshold=60"\netcd-snapshot-schedule-cron: "0 */6 * * *"\netcd-snapshot-retention: 20\n' >"$_k3s_cfg"
+    echo "      ✓ image GC at 70%%/60%%, etcd snapshots every 6h keeping 20 ($_k3s_cfg)"
     if systemctl is-active --quiet k3s 2>/dev/null; then
       echo "      ! k3s is already running — this file is read at startup, so the"
       echo "        change is pending until:  systemctl restart k3s"
@@ -551,34 +558,28 @@ run_server_bootstrap() {
   if systemctl is-active --quiet k3s 2>/dev/null; then
     echo "      ✓ k3s already running — leaving it alone"
   else
-    # --tls-san puts the public IP in the API server certificate. Without it a
-    # kubeconfig pointed at the public address fails verification, since k3s only
-    # signs for 127.0.0.1 and the internal IP by default.
+    # Three install-time-only decisions, none of which can be added to a running
+    # cluster without a reinstall or a restart:
     #
-    # --secrets-encryption encrypts Secrets at rest. Off by default, and this is the
-    # cheap moment: turning it on later needs a server restart. Without it, Secrets
-    # sit base64-encoded in the embedded SQLite datastore — so a stolen disk, a
-    # cloned volume or a Hetzner snapshot hands over every database password in
-    # plaintext. It does not defend against root on this node (the key lives on the
-    # same disk, and with no cloud KMS on Hetzner that is the ceiling), but it does
-    # defend against the backup-and-snapshot cases, which are the realistic ones.
+    #   --tls-san            k3s signs only 127.0.0.1 and the internal IP by default.
+    #                        Both the public and tailnet addresses go in, so a
+    #                        kubeconfig pointed at either verifies.
+    #   --secrets-encryption Otherwise every Secret sits base64-encoded in the
+    #                        datastore, where a snapshot or a cloned disk hands over
+    #                        every password. Not a defence against root on the node.
+    #   --cluster-init       Embedded etcd instead of SQLite. SQLite has no snapshot
+    #                        mechanism at all — `k3s etcd-snapshot` does not apply to
+    #                        it — so losing state.db loses the cluster, not just data.
     #
-    # Traefik and servicelb are deliberately NOT disabled: Traefik is the ingress
-    # we want, and klipper (servicelb) is what gives it an address on a single node.
-    #
-    # If Tailscale is up, its address goes into the certificate too: with the
-    # firewall fully closed, kubectl reaches the API server over the tunnel, and
-    # a SAN can only be added later by editing k3s config and restarting.
+    # Traefik and servicelb stay: Traefik is the ingress we want, and klipper is what
+    # gives it an address on a single node.
     tls_sans="--tls-san $public_ip"
     if [[ -n "$ts_ip" ]]; then
       echo "      ✓ tailscale detected ($ts_ip) — adding it to the API certificate"
       tls_sans+=" --tls-san $ts_ip"
     else
-      # [1/3] installs tailscale and brings it up, so reaching here means the
-      # interface genuinely failed to appear — an unauthenticated `tailscale up`,
-      # or tailscaled not running. Refuse rather than continue: a certificate
-      # without the tailnet SAN cannot be fixed without reinstalling k3s, and the
-      # firewall leaves no other route to the API server.
+      # Refuse rather than continue: a certificate without the tailnet SAN cannot be
+      # fixed without reinstalling k3s, and the firewall leaves no other route in.
       echo "      ✗ tailscale is installed but has no IPv4 address."
       echo "        The API certificate is baked at install time and the tailnet"
       echo "        address can only go in as a --tls-san, so continuing would"
@@ -589,7 +590,7 @@ run_server_bootstrap() {
     fi
     run_with_spinner "curl get.k3s.io | sh ($K3S_VERSION)" \
       env INSTALL_K3S_VERSION="$K3S_VERSION" \
-      INSTALL_K3S_EXEC="$tls_sans --secrets-encryption" \
+      INSTALL_K3S_EXEC="$tls_sans --secrets-encryption --cluster-init" \
       bash -c 'curl -sfL https://get.k3s.io | sh -'
 
     run_with_spinner "waiting for the node to become Ready" \
@@ -612,20 +613,25 @@ run_server_bootstrap() {
     echo "        If k3s pre-dated this script, enabling it needs a restart:"
     echo "        add 'secrets-encryption: true' to /etc/rancher/k3s/config.yaml && systemctl restart k3s"
   fi
+
+  # The only signal that --cluster-init took: the command exists either way and fails
+  # on SQLite. A cluster that came up on SQLite looks completely healthy and simply
+  # has no backup mechanism, which is worth finding out now rather than at a restore.
+  if /usr/local/bin/k3s etcd-snapshot ls >/dev/null 2>&1; then
+    echo "      ✓ datastore is etcd — k3s etcd-snapshot works"
+  else
+    echo "      ! datastore is NOT etcd, so no snapshot mechanism exists at all."
+    echo "        On an existing node: add 'cluster-init: true' to"
+    echo "        /etc/rancher/k3s/config.yaml and restart k3s, which migrates in place."
+  fi
   echo ""
 
   # --- [3/3] kubeconfig --------------------------------------------------------
   echo "[3/3] Writing a remote-ready kubeconfig"
-  # k3s names the cluster, context and user all "default". Renaming matters: a Mac
-  # is likely to already hold other kubeconfigs using that same name, and picking
-  # the wrong "default" is how you deploy to the wrong cluster.
-  # Prefer the tailscale address: with the firewall fully closed, the tunnel is
-  # the only route that reaches 6443 at all.
-  #
-  # The public-IP fallback is kept but is now an announced degradation rather than a
-  # silent one. It used to be reached on every re-run (ts_ip was unset outside the
-  # install branch) and it writes a kubeconfig pointing at a port the firewall drops —
-  # which looks like a broken cluster, not a broken address.
+  # k3s names the cluster, context and user all "default", and picking the wrong
+  # "default" is how you deploy to the wrong cluster. The address is the tailnet one:
+  # with the firewall closed nothing else reaches 6443. The public-IP fallback is an
+  # announced degradation, not a silent one.
   if [[ -z "$ts_ip" ]]; then
     echo "      ! No tailscale address — falling back to the public IP $public_ip."
     echo "        The firewall drops 6443 there, so this kubeconfig will time out."
@@ -643,61 +649,33 @@ run_server_bootstrap() {
   echo ""
 
   echo "--------------------"
-  echo "k3s is up. Four things left — 3 runs here, the rest from your Mac:"
+  echo "k3s is up. What is left, and who does it:"
   echo ""
-  echo "1. Fetch the kubeconfig — keep it as its own file, do not merge it:"
+  echo "1. Fetch the kubeconfig — its own file, never merged into ~/.kube/config:"
   echo ""
-  echo "     scp root@${public_ip}:${KUBECONFIG_OUT} ~/.kube/hetzner.yaml"
-  echo "     export KUBECONFIG=~/.kube/hetzner.yaml"
-  echo "     kubectl get nodes"
+  echo "     scp root@${kube_addr}:${KUBECONFIG_OUT} ~/.kube/${KUBE_CONTEXT_NAME}.yaml"
+  echo "     export KUBECONFIG=~/.kube/${KUBE_CONTEXT_NAME}.yaml && kubectl get nodes"
   echo ""
-  echo "2. Lock the firewall down (Hetzner Cloud Console → Firewalls, or hcloud):"
+  echo "2. Close the provider firewall: NO inbound rules, and ATTACHED — an"
+  echo "   unattached firewall filters nothing. Nothing needs to be open. ssh, the"
+  echo "   Kubernetes API and https all ride the tailscale tunnel, which is"
+  echo "   outbound-only, and certificates come from dns01, so not even :80 is"
+  echo "   needed. Postgres stays a ClusterIP, reached over the subnet route."
   echo ""
-  echo "     NO inbound rules at all. Create the firewall empty and ATTACH it to"
-  echo "     the server — an unattached firewall filters nothing."
+  echo "   Verify BOTH, in this order — closing it before the tunnel is proven"
+  echo "   locks you out of a box with no other way in:"
+  echo "     kubectl get nodes                                  # over the tailnet"
+  echo "     for p in 22 80 443 6443; do nc -z -G4 ${public_ip} \$p; done   # all fail"
   echo ""
-  echo "   Nothing needs to be open: ssh, the kubernetes API and (later) https all"
-  echo "   ride the tailscale tunnel, which is outbound-only. A port scan of the"
-  echo "   public IP should find nothing. Certificates come from cert-manager over"
-  echo "   dns01, so not even :80 is needed for ACME."
+  echo "3. The subnet route ($K3S_SERVICE_CIDR) is approved by the tailnet policy in"
+  echo "   mc2-terraform/server, not by hand. Without it a laptop reaches this host"
+  echo "   but not the pinned ClusterIPs every mc2-configs dev config dials, and a"
+  echo "   connection hangs rather than refuses. Check:"
+  echo "     tailscale status --json | jq '.Self.PrimaryRoutes'"
   echo ""
-  echo "   Postgres (5432) is never exposed publicly either. It stays a ClusterIP"
-  echo "   service, reached directly over the tailscale subnet route below — no"
-  echo "   port-forward, because the route makes 10.43.0.0/16 addressable."
-  echo ""
-  echo "3. APPROVE the subnet route in the tailscale admin console:"
-  echo ""
-  echo "     Machines -> $hostname_here -> Subnets -> approve $K3S_SERVICE_CIDR"
-  echo ""
-  echo "   The route was advertised by step [1/3] of this script. Advertising is the"
-  echo "   half a machine can do for itself; approval is a tailnet-wide decision and"
-  echo "   is the one step here that cannot be automated from the host."
-  echo ""
-  echo "   This is what lets a laptop reach the datastores at their pinned ClusterIPs"
-  echo "   (10.43.0.100/.101 on dev, .110/.111 on prod). Every dev-tier config in"
-  echo "   mc2-configs dials those addresses. Without this route the whole"
-  echo "   local-code-against-remote-data model is dead, and nothing says why."
-  echo ""
-  echo ""
-  echo "4. Bring the platform up, from mc2-k8s. Once per cluster, and the order is a"
-  echo "   real dependency chain rather than a preference:"
-  echo ""
-  echo "     ./create-secrets.sh dev        # every credential the cluster needs"
-  echo "     make cert-manager ENV=dev      # cert-manager + the ClusterIssuers"
-  echo "     make tls ENV=dev               # the one wildcard cert + Traefik TLSStore"
-  echo "     make deploy-data ENV=dev       # namespace, postgres, redis"
-  echo "     ./bootstrap-db-roles.sh dev    # the *_svc roles get their logins"
-  echo "     make argocd ENV=dev            # what deploys:  argocd.mc2-dev.com"
-  echo "     make argo-wf ENV=dev           # what builds:  workflows.mc2-dev.com"
-  echo "     make observability ENV=dev     # what watches: grafana.mc2-dev.com"
-  echo ""
-  echo "   create-secrets.sh reads every file in mc2-configs/k8s/dev/ and the"
-  echo "   files under secrets/ — the GitHub App key, two deploy keys, the JWT signing"
-  echo "   key. None of those are in git or on a fresh machine: read"
-  echo "   mc2-k8s/docs/03-secrets-and-config.md BEFORE this step, not after."
-  echo ""
-  echo "   Nothing deploys from a merge to main. A service reaches dev by merging into"
-  echo "   its dev/dev branch, which asks the cluster to build it."
+  echo "4. Bring the platform up from mc2-k8s — see docs/05-production-server.md."
+  echo "   The order there is a dependency chain, not a preference, and secrets now"
+  echo "   come from Infisical rather than a laptop."
 }
 
 # ==============================================================================
@@ -712,13 +690,8 @@ run_member_bootstrap() {
 
   banner "Local dev bootstrap"
 
-  # A role preset, because "which of these sixteen repos do I need?" is a question a
-  # new developer cannot answer on their first day — and the answer decides how much
-  # setup they face afterwards. A frontend checkout holds nothing that reads a secret,
-  # so virtualize asks it for no credentials at all.
-  #
-  # Asked first, before prerequisites, because the answer decides which toolchains are
-  # needed: there is no reason to make a frontend developer install helm.
+  # Asked before prerequisites, because the answer decides which toolchains are needed
+  # — there is no reason to make a frontend developer install helm.
   echo "[1/5] What will you be working on?"
   echo ""
   echo "  1) Frontend   — the three apps and the shared UI layer. No backend, no database."
@@ -733,10 +706,8 @@ run_member_bootstrap() {
   FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
   # mc2-mailer-api is deliberately absent: it is an empty repo until the core platform
   # is stable (its own README says so). Still reachable through "choose myself".
-  # mc2-rust is not optional for this preset: mc2-gateway and mc2-account-api
-  # declare it as a PATH dependency (../mc2-rust), so a checkout without it
-  # fails at `cargo build` with a missing Cargo.toml rather than anything that
-  # names the real problem.
+  # Not optional: the Rust services declare it as a PATH dependency (../mc2-rust), so
+  # a checkout without it fails at `cargo build` with a missing Cargo.toml.
   BACKEND_REPOS=(mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
 
   ROLE="everything"
@@ -797,11 +768,8 @@ run_member_bootstrap() {
     echo ""
   fi
 
-  # Offers to install anything missing that this checkout will actually use. Kept as
-  # offers rather than silent installs: this runs on someone's own machine.
-  #
-  # Declining must leave status 0: under `set -e` a non-zero return from a function
-  # call aborts the whole script — silently, since the "failure" is just answering N.
+  # Offers, not silent installs: this runs on someone's own machine. Declining must
+  # return 0, or `set -e` aborts the script because the "failure" was answering N.
   brew_offer() {
     local tool="$1" formula="$2" why="$3"
     command -v "$tool" >/dev/null 2>&1 && return 0
@@ -813,23 +781,13 @@ run_member_bootstrap() {
     return 0
   }
 
-  # Tailscale — for EVERY preset, including the frontend-only one.
+  # EVERY preset, including frontend-only, and therefore outside the conditionals:
+  # every mc2-dev.com hostname resolves to a tailnet address and the provider firewall
+  # drops the public IP, so a machine off the tailnet cannot reach dev at all. The
+  # frontend path is the lighter one precisely because it runs against deployed dev.
   #
-  # Not a convenience. Every mc2-dev.com hostname resolves to the server's TAILNET
-  # address (auth-dev.mc2-dev.com -> 100.123.167.112), and the Hetzner firewall drops
-  # the public IP outright, so a machine that is not on the tailnet cannot reach the
-  # dev tier at all — not the APIs, not the gateway, not Grafana, ArgoCD or the
-  # workflows UI. It is not a degraded experience, it is nothing resolving to
-  # anything reachable.
-  #
-  # This is why it sits OUTSIDE the preset conditionals. The frontend path is the
-  # lighter one — no Docker, no kubectl, no kubeconfig — precisely because those
-  # repos run against the deployed dev tier, which makes the tunnel the one thing a
-  # frontend developer cannot do without.
-  #
-  # A cask, not a formula: the macOS client is a GUI app that ships the CLI as a
-  # symlink, so `brew install tailscale` (the formula) would install a daemon that
-  # fights the app. brew_offer cannot express that, hence the separate block.
+  # A cask, not a formula: the macOS client is a GUI app shipping the CLI as a symlink,
+  # and the formula would install a daemon that fights it.
   if ! command -v tailscale >/dev/null 2>&1 && [[ ! -d /Applications/Tailscale.app ]]; then
     if command -v brew >/dev/null 2>&1; then
       read -rp "      tailscale isn't installed (the only route to the dev tier). Install it now? [y/N] " ans
@@ -859,30 +817,22 @@ run_member_bootstrap() {
   # name only. Every repo can stage a credential, so this is not preset-specific.
   brew_offer gitleaks gitleaks "blocks a commit that stages a credential"
 
-  # The formatter stack the hooks run, and the same argument as gitleaks applies to
-  # every one of them: the hooks gate on `command -v <tool>`, so a machine without
-  # them does not get a warning, it gets a hook that quietly does nothing — and the
-  # first thing to notice is CI, after the push, which is the whole failure mode these
-  # hooks exist to prevent.
-  #
-  # Every version is pinned in a config that CI pins identically: yamlfmt 0.21.0 and
-  # taplo 0.10.0 are what the workflows install, and shfmt 3.14.1 is what brew ships
-  # today. A formatter at a different version is a formatter with a different opinion,
-  # so if brew ever moves ahead of CI, CI is the one to change — not this.
-  #
-  # Not preset-specific. Every repo has YAML, most have TOML, and all of them have at
-  # least a ci.sh, so there is no preset that needs none of these.
+  # The hooks gate on `command -v <tool>`, so a machine without these gets a hook that
+  # quietly does nothing and finds out in CI — the failure mode the hooks exist to
+  # prevent. Versions must match what CI installs; a formatter at a different version
+  # is a formatter with a different opinion.
   brew_offer shellcheck shellcheck "lints the shell scripts before a push"
   brew_offer shfmt shfmt "formats the shell scripts (pre-commit rewrites and re-stages)"
   brew_offer yamlfmt yamlfmt "formats YAML — k8s manifests, workflows, config templates"
   brew_offer taplo taplo "formats TOML — Cargo.toml and pyproject.toml"
+  brew_offer terraform terraform "formats and validates mc2-terraform (its CI checks both)"
 
   if [[ "$NEEDS_CLUSTER" == true ]]; then
     brew_offer kubectl kubectl "talks to the cluster"
     brew_offer helm helm "installs Traefik locally"
     # The pipeline runs in the cluster, so reading it means talking to the cluster.
-    # Both CLIs work off ~/.kube/hetzner.yaml — argo needs nothing else; argocd wants
-    # one `argocd login argocd.mc2-dev.com` whose session then persists.
+    # Both work off the server kubeconfig; argocd additionally wants one
+    # `argocd login argocd.mc2-dev.com`, whose session then persists.
     brew_offer argo argo "reads the build pipeline (argo workflows)"
     brew_offer argocd argocd "reads what is deployed (argo cd)"
   fi
@@ -1029,17 +979,10 @@ run_member_bootstrap() {
   done
   echo ""
 
-  # Git hooks, via the ONE shared directory in mc2-wrappers rather than a copy per repo.
-  #
-  # An earlier version of this script wrote a pre-commit file into each .git/hooks. That
-  # was the wrong home: .git/hooks is untracked, so the logic was unversioned, and this
-  # script runs ONCE on a new machine — an improved hook would never have reached anyone
-  # already set up. `core.hooksPath` points at a committed directory instead, so updating
-  # a hook is a git pull.
-  #
-  # Delegated to virtualize because that is the tool run repeatedly (`--setup` calls
-  # --install-hooks too), which is what makes the mechanism self-healing. Doing it here as
-  # well matters for one reason: a new member can commit before they ever run virtualize.
+  # `core.hooksPath` at one committed directory, not a copy in each untracked
+  # .git/hooks — updating a hook is then a git pull. Delegated to virtualize, which is
+  # the tool run repeatedly; done here too because a new member can commit before they
+  # ever run it.
   if [[ -x "$MC2_DIR/mc2-wrappers/virtualize" ]]; then
     echo "      Installing git hooks (core.hooksPath -> mc2-wrappers/hooks)"
     "$MC2_DIR/mc2-wrappers/virtualize" --install-hooks 2>&1 | sed 's/^/      /'
