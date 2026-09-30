@@ -26,9 +26,9 @@ adding it to GitHub, clones the repos into `~/Work/mc2`, symlinks the CLIs.
 | Choose myself | whatever you tick | derived from what you ticked |
 
 **`tailscale` is checked for every preset, including Frontend.** Every
-`mc2-dev.com` hostname resolves to the server's tailnet address — `auth-dev.mc2-dev.com`
-is `100.123.167.112` — and the Hetzner firewall drops the public IP, so a machine
-that has not joined the tailnet cannot reach the dev tier at all. Installed as a
+`mc2-dev.com` hostname resolves to the server's tailnet address and the provider
+firewall drops the public IP, so a machine that has not joined the tailnet cannot reach
+the dev tier at all. Installed as a
 cask (the macOS client is a GUI app that ships the CLI as a symlink); signing in
 and being invited to the tailnet stay manual.
 
@@ -53,76 +53,87 @@ virtualize --setup
 
 ## Server mode
 
-Copy the one file over and run it **from a shell on the server** — it prompts three
-times, and if k3s misbehaves you want to already be there for `journalctl -u k3s`.
+Installs k3s on a fresh Linux box. Needs no repos and no checkout.
+
+**Normally nobody runs this.** `mc2-terraform/server` registers it as the VPS
+provider's post-install hook, which fetches it at a pinned commit, verifies its
+checksum and runs it while the OS is still installing. Provisioning a node is a
+`terraform apply`. This repo is public so that hook can reach a raw URL — **nothing
+secret may ever be added to it**; the unattended path takes its credentials from the
+environment the hook sets.
+
+```bash
+MC2_UNATTENDED=1 MC2_SERVER_PASSPHRASE=... MC2_CONFIRM_HOSTNAME=$(hostname) \
+  MC2_TS_AUTHKEY=tskey-... MC2_DISABLE_UFW=1 bash bootstrap.sh --server
+```
+
+Each variable replaces a prompt, and a missing one is a refusal naming the fix rather
+than a default — a guard that defaults is not a guard. `MC2_TS_AUTHKEY` is the one that
+matters: without a key `tailscale up` blocks on a browser URL nobody is watching, and
+that single fact is what kept provisioning manual. Terraform mints the key
+preauthorized, single-use and tagged, so the node joins as `tag:server`, its subnet
+route is auto-approved by the tailnet policy, and it has no key expiry to lock anyone
+out of a box with no inbound firewall rules.
+
+With no terminal there is nothing to watch, so `/var/log/mc2-bootstrap.log` is the run
+— `tail -f` it from the provider's web console.
+
+The interactive path is unchanged and still the default, for repairing an existing box
+or bringing up a provider Terraform does not cover:
 
 ```bash
 scp bootstrap.sh root@<SERVER_IP>:/tmp/
-ssh root@<SERVER_IP>
+ssh -t root@<SERVER_IP>            # -t, or the passphrase prompt refuses rather than echo it
 bash /tmp/bootstrap.sh --server
 ```
 
-Guards: refuses non-Linux, refuses non-root, requires the shared passphrase (an
-accident guard, not a security control), and makes you type the hostname back.
+Guards either way: refuses non-Linux, refuses non-root, requires the shared passphrase
+(an accident guard, not a security control), and makes you name the hostname.
 
-Installs **tailscale** first, before k3s, and brings it up advertising the cluster
-service CIDR (`10.43.0.0/16`) with `--accept-dns=false`. The ordering is
-load-bearing in both directions: k3s bakes its API certificate at install time and
-the tailnet address can only enter it as a `--tls-san`, and with the Hetzner
-firewall closed the tunnel is the only route to the host at all. `tailscale up`
-prints a URL and blocks until the machine is authenticated — that is why server
-mode is run from a shell on the box.
+### What it does
 
-One step stays manual and cannot be otherwise: **approving the subnet route** in
-the tailscale admin console (Machines -> this host -> Subnets). Advertising is what
-a machine can do for itself; approval is a tailnet-wide decision. Until it is
-approved a laptop can reach the host but not the ClusterIPs behind it.
+**Tailscale first, before k3s.** The ordering is load-bearing in both directions: k3s
+bakes its API certificate at install time and the tailnet address can only enter as a
+`--tls-san`, and with the provider firewall closed the tunnel is the only route to the
+host at all. `--accept-dns=false` is not optional on a Kubernetes node — accepting
+tailnet DNS rewrites `/etc/resolv.conf`, which is what CoreDNS forwards to, so
+in-cluster resolution breaks in a way that looks like a CoreDNS bug.
 
-`--accept-dns=false` is not optional on a Kubernetes node: accepting tailnet DNS
-rewrites `/etc/resolv.conf`, which is what CoreDNS forwards to, so in-cluster name
-resolution breaks in a way that looks like a CoreDNS bug.
+**Then k3s**, pinned to `K3S_VERSION`, with three install-time-only decisions:
 
-Then installs k3s pinned to `K3S_VERSION`, with:
+| flag | why it cannot wait |
+|---|---|
+| `--tls-san` | Both the public and tailnet addresses. A SAN cannot be added to a running cluster without reinstalling. |
+| `--secrets-encryption` | Otherwise every Secret sits base64-encoded in the datastore, where a snapshot or cloned disk hands over every password. Enabling it later needs a restart. |
+| `--cluster-init` | Embedded etcd instead of SQLite. SQLite has **no snapshot mechanism at all** — `k3s etcd-snapshot` does not apply to it — so losing `state.db` loses the cluster, not just the data. |
 
-- `--tls-san` for **both** the public IP and the tailnet address, so a kubeconfig
-  pointed at either verifies. If tailscale somehow has no address by this point the
-  script now refuses rather than continuing — a certificate without the tailnet SAN
-  cannot be corrected without reinstalling k3s, and the firewall leaves no other
-  way in
-- `--secrets-encryption` — **install-time only**; enabling it later needs a restart,
-  and without it every database password sits base64-encoded in the datastore where
-  a disk image or Hetzner snapshot exposes it
-- bundled Traefik and servicelb kept
+Bundled Traefik and servicelb are kept. The script verifies encryption and the etcd
+datastore actually came up rather than assuming the flags took: a cluster that came up
+on SQLite looks completely healthy and simply has no backups, which is worth finding
+out now rather than at a restore.
 
-It also offers to disable `ufw`, which filters flannel VXLAN and the pod/service
-CIDRs and breaks networking in ways that look like application bugs.
+It also writes snapshot and kubelet settings to `/etc/rancher/k3s/config.yaml`
+(6-hourly snapshots keeping 20; image GC at 70%/60%, because the kubelet's defaults do
+not count the BuildKit cache PVC and the disk fills before it acts), raises inotify
+limits to 8192/524288 in `/etc/sysctl.d`, and caps the journal at 500M. All four are
+files rather than flags, so re-running fixes an existing node. Off-server snapshot
+upload needs bucket credentials and is written by `mc2-terraform`, not here.
 
-And it raises the node's inotify limits to **8192 instances / 524288 watches**,
-persisted in `/etc/sysctl.d/99-mc2-inotify.conf`. The kernel default of 128
-instances is a desktop number: k3s's kubelet alone holds 25-40 watching
-ConfigMap and Secret volumes, and every Go component on top — Traefik,
-cert-manager, ArgoCD, Argo Workflows, Grafana, Loki, Prometheus, Alloy — opens
-more. Past the limit a watcher fails with "too many open files" and the loser is
-whichever process asked last, so the symptom surfaces far from the cause. Here it
-cost the database's logs: Alloy's tailer failed, retried every three seconds, and
-wrote its own failure into the stream it was meant to be reading. Nothing
-alerted, because nothing had crashed.
+It offers to disable `ufw`, which filters flannel VXLAN and the pod/service CIDRs and
+breaks networking in ways that look like application bugs.
 
-Then, from your Mac:
+### Afterwards
+
+The kubeconfig lands at `/root/mc2-server.kubeconfig` with context `mc2-server` — named
+for the role, not the vendor, because the previous `mc2-hetzner` pair turned a provider
+change into a rename across five files in four repos.
 
 ```bash
-scp root@<SERVER_IP>:/root/mc2-hetzner.kubeconfig ~/.kube/hetzner.yaml
-export KUBECONFIG=~/.kube/hetzner.yaml && kubectl get nodes
+scp root@<TAILNET_IP>:/root/mc2-server.kubeconfig ~/.kube/mc2-server.yaml
+export KUBECONFIG=~/.kube/mc2-server.yaml && kubectl get nodes
 ```
 
-Keep it as its own file — the gap between `docker-desktop` and production is not
-something to leave to whichever context is current.
-
-Continue with `mc2-k8s/docs/05-production-hetzner.md`.
-
-> Re-running skips the k3s install if it's already active, but does **not** verify an
-> existing server carries the same `--tls-san`.
->
-> Re-running DOES apply the inotify settings, so an existing node gets them
-> without a rebuild — it is the supported way to bring an older server up to
-> this configuration.
+Keep it as its own file. Then close the provider firewall — zero inbound rules, and
+**attached**; an unattached firewall filters nothing — but only after `kubectl get
+nodes` works over the tunnel. Closing it first locks you out of a box with no other way
+in. Everything else is `mc2-k8s/docs/05-production-server.md`.
