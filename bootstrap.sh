@@ -418,6 +418,32 @@ run_server_bootstrap() {
     echo "      ✓ tailscale already installed ($(tailscale version 2>/dev/null | head -1))"
   fi
 
+  # IP forwarding, BEFORE `tailscale up`. A subnet router cannot forward without it,
+  # and tailscale only warns: "IP forwarding is disabled, subnet routing/exit nodes
+  # will not work". The route is then advertised by a node that cannot carry it. k3s
+  # turns forwarding on later for its own reasons, which is why this was invisible —
+  # the end state looked right and the warning scrolled past in a log nobody reads.
+  #
+  # A file in sysctl.d, not `sysctl -w`: the latter is lost on the next reboot.
+  echo "      Enabling IP forwarding (a subnet router cannot work without it)"
+  printf 'net.ipv4.ip_forward = 1\nnet.ipv6.conf.all.forwarding = 1\n' >/etc/sysctl.d/99-tailscale.conf
+  sysctl --system >/dev/null 2>&1 || true
+  if [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" == "1" ]]; then
+    echo "      ✓ net.ipv4.ip_forward = 1 (persisted in /etc/sysctl.d/99-tailscale.conf)"
+  else
+    echo "      ! IP forwarding is still off — the subnet route will be advertised but"
+    echo "        carry no traffic, and tailscale will only warn about it."
+  fi
+
+  # UDP GRO on the physical interface. Tailscale warns that throughput is capped
+  # without it; harmless to miss, cheap to set, and the warning is otherwise noise in
+  # every future log.
+  _iface="$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')"
+  if [[ -n "$_iface" ]] && command -v ethtool >/dev/null 2>&1; then
+    ethtool -K "$_iface" rx-udp-gro-forwarding on rx-gro-list off >/dev/null 2>&1 \
+      && echo "      ✓ UDP GRO forwarding tuned on $_iface"
+  fi
+
   # Without a key `tailscale up` blocks on a browser URL — the one reason this script
   # needed a human. An OAuth-minted key can only create TAGGED devices, so the host
   # joins as tag:server: no key expiry to lock anyone out, and the policy can
