@@ -24,6 +24,12 @@ set -eu
 
 GITHUB_OWNER="${GITHUB_OWNER:-mc2-development}"
 
+# Both member-mode constants below are evaluated before the mode is dispatched, so
+# server mode reads them too — and a post-install hook has no login environment, so
+# $HOME is unset and `set -u` aborts the whole script on line 27. Found the hard way:
+# the stub fetched and checksum-verified bootstrap.sh, then died before [1/3].
+: "${HOME:=/root}"
+
 WORK_DIR="$HOME/Work"
 MC2_DIR="$WORK_DIR/mc2"
 REPOS=(mc2-wrappers mc2-k8s mc2-configs mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
