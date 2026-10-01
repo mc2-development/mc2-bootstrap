@@ -32,7 +32,7 @@ GITHUB_OWNER="${GITHUB_OWNER:-mc2-development}"
 
 WORK_DIR="$HOME/Work"
 MC2_DIR="$WORK_DIR/mc2"
-REPOS=(mc2-wrappers mc2-k8s mc2-configs mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
+REPOS=(mc2-wrappers mc2-k8s mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
 
 # Default filename — ssh tries this automatically with no ~/.ssh/config needed,
 # as long as it's the only key on the machine.
@@ -701,7 +701,7 @@ run_server_bootstrap() {
   echo ""
   echo "3. The subnet route ($K3S_SERVICE_CIDR) is approved by the tailnet policy in"
   echo "   mc2-terraform/server, not by hand. Without it a laptop reaches this host"
-  echo "   but not the pinned ClusterIPs every mc2-configs dev config dials, and a"
+  echo "   but not the pinned ClusterIPs every dev connection string dials, and a"
   echo "   connection hangs rather than refuses. Check:"
   echo "     tailscale status --json | jq '.Self.PrimaryRoutes'"
   echo ""
@@ -734,7 +734,8 @@ run_member_bootstrap() {
   read -rp "  Select [1-4]: " _role
   echo ""
 
-  BASE_REPOS=(mc2-wrappers mc2-k8s mc2-configs)
+  # mc2-configs is retired — settings are in mc2-k8s, credentials in Infisical.
+  BASE_REPOS=(mc2-wrappers mc2-k8s)
   FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
   # mc2-mailer-api is deliberately absent: it is an empty repo until the core platform
   # is stable (its own README says so). Still reachable through "choose myself".
@@ -869,6 +870,26 @@ run_member_bootstrap() {
     # `argocd login argocd.mc2-dev.com`, whose session then persists.
     brew_offer argo argo "reads the build pipeline (argo workflows)"
     brew_offer argocd argocd "reads what is deployed (argo cd)"
+    # Its own tap, like tflint — `brew install infisical` finds an unrelated formula.
+    brew_offer infisical infisical/get-cli/infisical "injects each service's configuration at run time"
+
+    # Installed is not the same as logged in, and the difference only shows up when a
+    # service fails to start. Unlike `tailscale status` this exits 0 either way, so the
+    # check reads the output: the CLI says so in one line when no profile exists.
+    #
+    # One login per machine. The domain is remembered in the profile, so nothing after
+    # this needs the flag — and the instance is on the tailnet, so the step above has
+    # to have worked first.
+    if command -v infisical >/dev/null 2>&1 \
+      && infisical profile list 2>&1 | grep -q 'No login profiles found'; then
+      read -rp "      infisical isn't logged in. Sign in now (opens a browser)? [y/N] " ans
+      if [[ "$ans" =~ ^[Yy]$ ]]; then
+        infisical login --domain https://infisical.mc2-dev.com || true
+      else
+        echo "        Later:  infisical login --domain https://infisical.mc2-dev.com"
+        echo "        Until then no service can start — its configuration lives there."
+      fi
+    fi
   fi
 
   # The language toolchains virtualize --setup shells out to. Without these it fails
@@ -926,7 +947,7 @@ run_member_bootstrap() {
         Needed for the tools above. Install: https://brew.sh")
 
   if [[ "$NEEDS_CLUSTER" == true ]]; then
-    FOUND+=(Docker kubectl helm argo argocd)
+    FOUND+=(Docker kubectl helm argo argocd infisical)
     command -v docker >/dev/null 2>&1 || MISSING+=("Docker Desktop
         1. Download and install: https://www.docker.com/products/docker-desktop/
         2. Open it once (finishes first-time setup)
@@ -939,6 +960,10 @@ run_member_bootstrap() {
         Run: brew install argo")
     command -v argocd >/dev/null 2>&1 || MISSING+=("argocd
         Run: brew install argocd")
+    command -v infisical >/dev/null 2>&1 || MISSING+=("infisical
+        Run: brew install infisical/get-cli/infisical
+        Services read their configuration from it at startup — there is no .env to
+        fall back on, so without this nothing starts.")
   fi
 
   if [[ "$NEEDS_PYTHON" == true ]]; then
@@ -1108,8 +1133,13 @@ run_member_bootstrap() {
     echo "You're set up. Two commands and you're running:"
     echo ""
     echo "  cd $MC2_DIR"
-    echo "  virtualize --setup -e dev                       # installs deps, writes dev configs"
+    echo "  virtualize --setup -e dev                       # installs deps, points projects at dev"
     echo "  virtualize -p $_example_app --start   # $_example_port"
+    echo ""
+    echo "Nothing is written to this machine: a service reads its settings from"
+    echo "mc2-k8s/overlays/<tier> and its credentials from Infisical, straight into the"
+    echo "process. If --start says you are not logged in:"
+    echo "  infisical login --domain https://infisical.mc2-dev.com"
     echo ""
     echo "Reaching *-dev.mc2-dev.com needs Tailscale — ask to be added to the network."
     echo "Move one app to another tier with 'virtualize -p <project> --switch-dev' (or"
@@ -1120,13 +1150,14 @@ run_member_bootstrap() {
     echo "  cd $MC2_DIR"
     echo "  kube --install-traefik   # one-time"
     echo "  kube --reboot"
-    echo "  virtualize --setup       # generates your configs, then venvs + IDE + forwards"
+    echo "  virtualize --setup       # venvs, IDE configs, forwards"
     echo ""
-    echo "To work against the dev cluster instead of your own, take its credentials"
-    echo "from the cluster rather than from anyone's keyboard:"
+    echo "Nothing is copied to this machine. A service reads its settings from"
+    echo "mc2-k8s/overlays/<tier> and its credentials from Infisical, both straight into"
+    echo "the process:"
     echo ""
-    echo "  virtualize --pull-configs -e dev"
-    echo "  virtualize --setup -e dev"
+    echo "  virtualize -p mc2-gateway --switch-dev"
+    echo "  virtualize -p mc2-gateway --start      # or --ide, so the IDE inherits them"
   fi
 }
 
