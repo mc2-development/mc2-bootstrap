@@ -803,6 +803,19 @@ run_member_bootstrap() {
 
   # Offers, not silent installs: this runs on someone's own machine. Declining must
   # return 0, or `set -e` aborts the script because the "failure" was answering N.
+  # For tools with no Homebrew formula. Same shape and same contract as brew_offer:
+  # offer, never install silently, and return 0 when declined so `set -e` does not read
+  # a refusal as a failure.
+  tool_offer() {
+    local tool="$1" cmd="$2" why="$3"
+    command -v "$tool" >/dev/null 2>&1 && return 0
+    read -rp "      $tool isn't installed ($why). Install it now? [y/N] " ans
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      run_with_spinner "$cmd" sh -c "$cmd"
+    fi
+    return 0
+  }
+
   brew_offer() {
     local tool="$1" formula="$2" why="$3"
     command -v "$tool" >/dev/null 2>&1 && return 0
@@ -897,6 +910,12 @@ run_member_bootstrap() {
   # before anything is cloned, rather than discovered later.
   if [[ "$NEEDS_PYTHON" == true ]]; then
     brew_offer uv uv "Python toolchain — replaces pip and venv"
+  fi
+  if [[ "$NEEDS_RUST" == true ]]; then
+    # cargo already refuses an undeclared import by failing to compile; nothing warns
+    # about a declared dependency nothing uses. No formula, so cargo installs it.
+    tool_offer cargo-machete "cargo install cargo-machete" \
+      "reports a dependency declared in Cargo.toml and never used"
   fi
   if [[ "$NEEDS_NODE" == true ]]; then
     brew_offer node node "runs the Nuxt apps"
