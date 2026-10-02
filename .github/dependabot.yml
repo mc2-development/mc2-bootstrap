@@ -1,0 +1,22 @@
+# Keeps the SHA pins in .github/workflows current, and rewrites the version comment
+# beside each one — that comment is what establishes lineage, so if it drifts the
+# updates stop silently.
+#
+# cooldown is the actual protection: tj-actions (CVE-2025-30066) was exploited by
+# publishing malicious code and having it adopted within hours. Nothing is adopted
+# here until it has been public for three days, ten for a major.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 3
+      semver-major-days: 10
+    groups:
+      actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 2
