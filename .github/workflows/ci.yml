@@ -18,14 +18,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Nothing by default. Each job grants only what it needs, so a job added
+# later starts with no token scope rather than inheriting write access.
+permissions: {}
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v5
-
+        with:
+          persist-credentials: false
       - name: Install yamlfmt
         # `go install` puts the binary in GOPATH/bin, which is NOT on PATH for the
         # next step by default — that gap is exactly what broke the first run of
