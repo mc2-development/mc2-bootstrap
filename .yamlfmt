@@ -36,31 +36,37 @@
 #
 # The two overlay kustomizations are the third instance of the same category, and
 # the one that would have broken a deploy. mc2-k8s's pipeline runs `kustomize edit
-# set image` in overlays/$ENV and commits that file, and kustomize re-serialises
-# the WHOLE file with indentless sequences — the opposite of indentless_arrays:
-# false below. Measured, not assumed: running it in the alpine/k8s:1.36.4 image the
-# pipeline uses rewrote 226 lines of overlays/dev/kustomization.yaml. Left in
-# scope, every automated deploy would land a bot commit that fails this repo's own
-# yamlfmt check, so the merge button would go red on a deploy nobody could fix
-# without reverting the formatter. Only dev and prod are excluded, because only
-# those two are ever passed to `kustomize edit`; the rest of overlays/ is
-# hand-written and stays formatted.
+# set image` in the overlay directory environments.conf names for the target
+# environment, and commits that file, and kustomize re-serialises the WHOLE file
+# with indentless sequences — the opposite of indentless_arrays: false below.
+# Measured, not assumed: running it in the alpine/k8s:1.36.4 image the pipeline
+# uses rewrote 226 lines of the dev kustomization. Left in scope, every automated
+# deploy would land a bot commit that fails this repo's own yamlfmt check, so the
+# merge button would go red on a deploy nobody could fix without reverting the
+# formatter.
 #
-# No pattern here matches anything in the other seventeen repos, so this file stays
+# The paths are server/dev and server/prod, spelled out, NOT
+# `**/overlays/server/*/kustomization.yaml`: overlays/server/ also holds infisical
+# and observability, which are hand-written and must stay formatted. A wildcard
+# here would quietly drop two files out of the formatter's scope — the same shape
+# of silent miss as the dev/prod patterns that matched nothing after overlays/ was
+# regrouped by cluster. Only these two are ever passed to `kustomize edit`.
+#
+# No pattern here matches anything in the other eighteen repos, so this file stays
 # byte-identical across the workspace.
 doublestar: true
 exclude:
   - "**/node_modules/**"
   - "**/pnpm-lock.yaml"
-  - "**/overlays/dev/kustomization.yaml"
-  - "**/overlays/prod/kustomization.yaml"
+  - "**/overlays/server/dev/kustomization.yaml"
+  - "**/overlays/server/prod/kustomization.yaml"
 
 formatter:
   type: basic
   # Off (yamlfmt's own default): every manifest here uses the standard "+2" list
   # style — `containers:` then `  - name: postgres`, one level deeper than the key.
   # The on/indentless style (dash flush with the key) is NOT used anywhere once
-  # actually surveyed across all 38 kustomization.yaml files plus every manifest.
+  # actually surveyed across all 41 kustomization.yaml files plus every manifest.
   indentless_arrays: false
   # On: the default removes blank lines between comment blocks and the field they
   # document. Every manifest here uses a blank line as a paragraph break inside a
@@ -81,7 +87,7 @@ formatter:
   # multi-document (platform/policy/networkpolicy.yaml alone is 24 resources in one
   # file) and correctly use it, while single-resource files correctly have none. A
   # boolean here is wrong either way — `true` forces `---` onto files that never had
-  # one (proven: it added a leading `---` to all 38 kustomization.yaml files, none of
+  # one (proven: it added a leading `---` to all 41 kustomization.yaml files, none of
   # which want it), and `false` strips the marker from every multi-document file,
   # which does not just look different — `kubectl`/kustomize split resources on that
   # marker, so removing it changes what the file MEANS.
