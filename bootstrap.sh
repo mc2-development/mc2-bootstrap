@@ -698,6 +698,9 @@ run_member_bootstrap() {
       mc2-ui | mc2-operation-frontend | mc2-accounting-frontend | mc2-platform-frontend) NEEDS_NODE=true ;;
     esac
   done
+  # Cargo.toml and pyproject.toml only; a frontend checkout has no TOML at all.
+  NEEDS_TOML=false
+  [[ "$NEEDS_PYTHON" == true || "$NEEDS_RUST" == true ]] && NEEDS_TOML=true
   # Only a backend checkout runs a local cluster; the frontend points at deployed dev.
   NEEDS_CLUSTER=false
   [[ "$NEEDS_PYTHON" == true || "$NEEDS_RUST" == true ]] && NEEDS_CLUSTER=true
@@ -770,10 +773,12 @@ run_member_bootstrap() {
   brew_offer shellcheck shellcheck "lints the shell scripts before a push"
   brew_offer shfmt shfmt "formats the shell scripts (pre-commit rewrites and re-stages)"
   brew_offer yamlfmt yamlfmt "formats YAML — k8s manifests, workflows, config templates"
-  brew_offer taplo taplo "formats TOML — Cargo.toml and pyproject.toml"
-  brew_offer terraform terraform "formats and validates mc2-terraform (its CI checks both)"
-  # Its own tap: `brew install tflint` finds nothing.
-  brew_offer tflint terraform-linters/tap/tflint "lints mc2-terraform (pre-push runs it)"
+
+  # terraform and tflint used to be offered here. mc2-terraform is in no preset and in
+  # no menu, so this script never clones it and nobody it sets up could run them.
+  if [[ "$NEEDS_TOML" == true ]]; then
+    brew_offer taplo taplo "formats TOML — Cargo.toml and pyproject.toml"
+  fi
 
   if [[ "$NEEDS_CLUSTER" == true ]]; then
     brew_offer kubectl kubectl "talks to the cluster"
@@ -869,6 +874,11 @@ run_member_bootstrap() {
         fall back on, so without this nothing starts.")
   fi
 
+  if [[ "$NEEDS_TOML" == true ]]; then
+    FOUND+=(taplo)
+    command -v taplo >/dev/null 2>&1 || MISSING+=("taplo
+        Run: brew install taplo")
+  fi
   if [[ "$NEEDS_PYTHON" == true ]]; then
     FOUND+=(uv)
     command -v uv >/dev/null 2>&1 || MISSING+=("uv
