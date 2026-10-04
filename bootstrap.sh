@@ -1,70 +1,43 @@
 #!/bin/bash
-# MC2 bootstrap — prepares a machine. Two modes, one script.
-#
-#   --member  (default)  A developer's Mac. Sets up SSH access to GitHub, creates
-#                        ~/Work/mc2, clones the repos needed to run Quotance
-#                        locally, and symlinks the kube/virtualize CLI tools.
-#                        Does not touch the cluster — that's printed at the end.
-#
-#   --server             A Linux host that will run the k3s cluster. Installs k3s
-#                        (with its bundled Traefik) and nothing else: no repos, no
-#                        GitHub SSH, no Homebrew, no CLI symlinks. A server holding
-#                        the database has no business holding a git checkout.
-#
-# Normally nobody puts this on the box: Terraform registers it as the provider's
-# post-install hook, which fetches it at a pinned commit. Hence MC2_UNATTENDED — see
-# usage() for the env contract. This repo is PUBLIC; nothing secret goes in it.
-#
-# Interactively (repair, or a provider Terraform does not cover):
-#   scp bootstrap.sh root@<ip>:/tmp/ && ssh -t root@<ip>   # -t, or the passphrase refuses
-#   bash /tmp/bootstrap.sh --server
-# No pipefail: ~27 pipelines here rely on the first command being allowed to fail
-# (`ls <glob> 2>/dev/null | grep -v example`). Turning it on needs its own pass.
+# Prepares a machine: --member sets up a developer Mac, --server installs k3s on a
+# Linux host. Terraform runs the server mode as the provider's post-install hook, so
+# MC2_UNATTENDED exists; see usage(). This repo is PUBLIC — nothing secret goes in it.
+# No pipefail: ~27 pipelines rely on the first command being allowed to fail.
 set -eu
 
 GITHUB_OWNER="${GITHUB_OWNER:-mc2-development}"
 
-# Both member-mode constants below are evaluated before the mode is dispatched, so
-# server mode reads them too — and a post-install hook has no login environment, so
-# $HOME is unset and `set -u` aborts the whole script on line 27. Found the hard way:
-# the stub fetched and checksum-verified bootstrap.sh, then died before [1/3].
+# A post-install hook has no login environment, so $HOME is unset and `set -u` aborts.
 : "${HOME:=/root}"
 
 WORK_DIR="$HOME/Work"
 MC2_DIR="$WORK_DIR/mc2"
 REPOS=(mc2-wrappers mc2-k8s mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
 
-# Default filename — ssh tries this automatically with no ~/.ssh/config needed,
-# as long as it's the only key on the machine.
+# The default name, so ssh finds it with no ~/.ssh/config.
 SSH_KEY="$HOME/.ssh/id_ed25519"
 
 # --- server mode settings -----------------------------------------------------
 
-# An ACCIDENT GUARD, not a security control — it stops --server running on a machine
-# that should have been --member. Change it with:
-#   printf '%s' 'your passphrase' | shasum -a 256
+# An accident guard, not a security control. Change it: printf '%s' 'x' | shasum -a 256
 SERVER_PASSPHRASE_SHA256="f8c87098a3fdd32415f48701a4d497433f0beaad98654a873b8755d424158ded"
 
-# Named for the role, not the vendor: "hetzner" here made a provider change a rename
-# across five files in four repos.
+# Named for the role, not the vendor: the last rename touched five files in four repos.
 KUBECONFIG_OUT="/root/mc2-server.kubeconfig"
 KUBE_CONTEXT_NAME="mc2-server"
 
-# Unattended there is no terminal, so this log is the only record of the run.
+# Unattended there is no terminal, so this is the only record of the run.
 SERVER_LOG="/var/log/mc2-bootstrap.log"
 
-# Pinned so a rebuild reproduces THIS cluster, not whatever "stable" points at today.
-#     curl -s https://update.k3s.io/v1-release/channels | grep -o 'v1[^"]*k3s1' | head
+# Pinned so a rebuild reproduces THIS cluster, not whatever "stable" means today.
 K3S_VERSION="v1.36.4+k3s1"
 
 UNATTENDED="${MC2_UNATTENDED:-}"
 
-# The tailnet device name, decided by the caller rather than by whatever the machine
-# calls itself (srv2023513, here). Every mc2-dev.com hostname resolves to this device.
+# Every mc2-dev.com hostname resolves to this tailnet device.
 MC2_TS_HOSTNAME="${MC2_TS_HOSTNAME:-mc2}"
 
-# Advertised to the tailnet so a laptop dials a ClusterIP directly. Must agree with
-# the pinned ClusterIPs in mc2-k8s/overlays/<env>/data/clusterips.yaml.
+# Advertised to the tailnet; must match mc2-k8s/overlays/<env>/data/clusterips.yaml.
 K3S_SERVICE_CIDR="10.43.0.0/16"
 
 MODE="member"
@@ -123,13 +96,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Runs a command in the background with a spinner, prints a check/cross when done.
+# Runs a command with a spinner, or plain lines when there is no terminal.
 run_with_spinner() {
   local msg="$1"
   shift
 
-  # No terminal, no spinner: \r frames turn a log file into megabytes of carriage
-  # returns around the one line anybody needs.
+  # \r frames would turn the log into megabytes of carriage returns.
   if [[ -n "$UNATTENDED" || ! -t 1 ]]; then
     echo "      · $msg"
     if "$@" >>"${SERVER_LOG:-/dev/null}" 2>&1; then
@@ -152,8 +124,7 @@ run_with_spinner() {
     i=$(((i + 1) % ${#frames}))
     sleep 0.1
   done
-  # Capture the status: `wait` under `set -e` would abort before the failure branch
-  # below could print the log.
+  # `wait` under `set -e` would abort before the failure branch could print the log.
   local status=0
   wait "$pid" || status=$?
   if [[ $status -eq 0 ]]; then
@@ -167,13 +138,7 @@ run_with_spinner() {
   rm -f "$log"
 }
 
-# Arrow-key checkbox menu. Items passed as args, all ticked by default.
-# Items already present in $MC2_DIR show dimmed/locked — skipped by navigation,
-# always included in the result. Space toggles, enter confirms.
-# Result left in $CHECKED_ITEMS array.
-# Repos that exist in the org but hold nothing yet. Shown, selectable, but never
-# checked by default — cloning one gets you an empty directory, and finding that out
-# afterwards is the kind of small confusion a first day does not need.
+# Empty repos: selectable, never ticked by default, since cloning one gets a bare dir.
 repo_note() {
   case "$1" in
     mc2-mailer-api) echo " — placeholder, not started" ;;
@@ -181,6 +146,7 @@ repo_note() {
   esac
 }
 
+# Arrow-key menu; already-cloned repos are locked on. Result in $CHECKED_ITEMS.
 checkbox_menu() {
   set +e
   local items=("$@")
@@ -294,8 +260,7 @@ sha256_of() {
 run_server_bootstrap() {
   banner "Server bootstrap (k3s)"
 
-  # Opened before the guards, not after: a refusal is what someone reads the log for,
-  # and unattended no terminal saw it.
+  # Before the guards: a refusal is what someone reads the log for.
   if [[ -n "$UNATTENDED" ]]; then
     mkdir -p "$(dirname "$SERVER_LOG")"
     exec > >(tee -a "$SERVER_LOG") 2>&1
@@ -303,8 +268,7 @@ run_server_bootstrap() {
   fi
 
   # --- guard 1: platform -------------------------------------------------------
-  # Before the passphrase: --server on a Mac is the likeliest mistake and deserves a
-  # better message than "wrong passphrase".
+  # Before the passphrase: --server on a Mac deserves better than "wrong passphrase".
   if [[ "$(uname -s)" != "Linux" ]]; then
     echo "Refusing: --server provisions a Linux k3s host, but this is $(uname -s)."
     echo "Did you mean --member (the developer Mac setup)?"
@@ -326,8 +290,7 @@ run_server_bootstrap() {
     echo "  MC2_UNATTENDED and run this from a terminal."
     exit 1
   else
-    # `read -s` cannot disable echo without a terminal, and `ssh host 'bash …'`
-    # allocates none — the passphrase would be typed in clear. Refuse instead.
+    # `read -s` cannot disable echo without a terminal, so the passphrase would be clear.
     if [[ ! -t 0 ]]; then
       echo "Refusing: no terminal attached, so the passphrase would be echoed in clear."
       echo ""
@@ -353,8 +316,7 @@ run_server_bootstrap() {
   if [[ -n "$IP_OVERRIDE" ]]; then
     public_ip="$IP_OVERRIDE"
   else
-    # No provider metadata service: the Hetzner-specific probe that used to come
-    # first cost three seconds of timeout on every other provider.
+    # No provider metadata probe: it cost three seconds of timeout on every other host.
     public_ip="$(curl -sf --max-time 5 https://ifconfig.me 2>/dev/null || true)"
     [[ -z "$public_ip" ]] && public_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
   fi
@@ -372,8 +334,7 @@ run_server_bootstrap() {
   echo ""
   echo "This installs a Kubernetes control plane and its bundled Traefik."
 
-  # The guard is kept, not skipped: the caller still names the machine it means, just
-  # in advance. Terraform fills it from the VPS's own `hostname`.
+  # Unattended still names the machine, just in advance; Terraform fills it in.
   local typed
   if [[ -n "$UNATTENDED" ]]; then
     typed="${MC2_CONFIRM_HOSTNAME:-}"
@@ -404,27 +365,19 @@ run_server_bootstrap() {
   fi
   echo "      ✓ curl and systemd present"
 
-  # Before k3s, and the order is load-bearing twice: k3s bakes its API certificate at
-  # install time and the tailnet address can only enter as a --tls-san, and with the
-  # provider firewall closed the tunnel is the only route to the host at all.
+  # Before k3s: the API certificate is baked at install time and needs the tailnet SAN,
+  # and with the firewall closed the tunnel is the only route in.
   if ! command -v tailscale >/dev/null 2>&1; then
     echo "      Installing tailscale (the only way into this host once the firewall is closed)"
-    # The vendor script, not apt directly: it adds the signing key and the release
-    # channel for THIS Ubuntu version, which is what `apt-get install tailscale`
-    # alone cannot do on a box that has never seen the repo.
+    # The vendor script adds the signing key and the release channel; apt alone cannot.
     run_with_spinner "curl tailscale.com/install.sh | sh" \
       bash -c 'curl -fsSL https://tailscale.com/install.sh | sh'
   else
     echo "      ✓ tailscale already installed ($(tailscale version 2>/dev/null | head -1))"
   fi
 
-  # IP forwarding, BEFORE `tailscale up`. A subnet router cannot forward without it,
-  # and tailscale only warns: "IP forwarding is disabled, subnet routing/exit nodes
-  # will not work". The route is then advertised by a node that cannot carry it. k3s
-  # turns forwarding on later for its own reasons, which is why this was invisible —
-  # the end state looked right and the warning scrolled past in a log nobody reads.
-  #
-  # A file in sysctl.d, not `sysctl -w`: the latter is lost on the next reboot.
+  # Before `tailscale up`: without it the route is advertised by a node that cannot
+  # carry it, and tailscale only warns. In sysctl.d, so a reboot keeps it.
   echo "      Enabling IP forwarding (a subnet router cannot work without it)"
   printf 'net.ipv4.ip_forward = 1\nnet.ipv6.conf.all.forwarding = 1\n' >/etc/sysctl.d/99-tailscale.conf
   sysctl --system >/dev/null 2>&1 || true
@@ -435,22 +388,16 @@ run_server_bootstrap() {
     echo "        carry no traffic, and tailscale will only warn about it."
   fi
 
-  # UDP GRO on the physical interface. Tailscale warns that throughput is capped
-  # without it; harmless to miss, cheap to set, and the warning is otherwise noise in
-  # every future log.
+  # Tailscale caps throughput without it, and warns in every future log.
   _iface="$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')"
   if [[ -n "$_iface" ]] && command -v ethtool >/dev/null 2>&1; then
     ethtool -K "$_iface" rx-udp-gro-forwarding on rx-gro-list off >/dev/null 2>&1 \
       && echo "      ✓ UDP GRO forwarding tuned on $_iface"
   fi
 
-  # Without a key `tailscale up` blocks on a browser URL — the one reason this script
-  # needed a human. An OAuth-minted key can only create TAGGED devices, so the host
-  # joins as tag:server: no key expiry to lock anyone out, and the policy can
-  # auto-approve its route. Never spinner-wrapped — the operator must see that URL.
-  #
-  # --accept-dns=false is not optional on a Kubernetes node: accepting tailnet DNS
-  # rewrites /etc/resolv.conf, which is what CoreDNS forwards to.
+  # Without a key this blocks on a browser URL, so it is never spinner-wrapped.
+  # --accept-dns=false is not optional: tailnet DNS rewrites the resolv.conf CoreDNS
+  # forwards to.
   _ts_routes="$(tailscale debug prefs 2>/dev/null | grep -A2 '"AdvertiseRoutes"' | grep -c "$K3S_SERVICE_CIDR" || true)"
   if tailscale status >/dev/null 2>&1 && [[ "${_ts_routes:-0}" -gt 0 ]]; then
     echo "      ✓ tailscale up, already advertising $K3S_SERVICE_CIDR"
@@ -486,14 +433,12 @@ run_server_bootstrap() {
     fi
   fi
 
-  # Resolved ONCE, here: two later steps need it from different branches. Assigning it
-  # inside the install branch was a live bug — on a re-run it was unset and
-  # `${ts_ip:-$public_ip}` silently rewrote a working kubeconfig to a blocked address.
+  # Resolved once: two later steps read it, and on a re-run an unset value silently
+  # rewrote a working kubeconfig to a blocked address.
   ts_ip="$(tailscale ip -4 2>/dev/null | head -1 || true)"
 
-  # ufw filters flannel VXLAN and the pod/service CIDRs, so the cluster comes up
-  # looking healthy and then DNS quietly fails. Firewall at the PROVIDER layer, in
-  # front of the host, where it cannot break cluster-internal networking.
+  # ufw filters flannel VXLAN and the pod/service CIDRs: the cluster looks healthy and
+  # DNS quietly fails. Firewall at the provider layer instead.
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active'; then
     echo ""
     echo "      ! ufw is active. k3s needs it off, or explicitly opened for the"
@@ -527,11 +472,8 @@ run_server_bootstrap() {
     echo "      ✓ ufw not active"
   fi
 
-  # The kernel's 128 max_user_instances is a desktop number; kubelet alone holds
-  # 25-40. Past the limit a watcher fails with "too many open files" and the loser is
-  # whichever process asked last — here it cost the database's logs for a day, with
-  # nothing alerting because nothing crashed. 8192/524288 are OpenShift's defaults.
-  # A file in sysctl.d, not `sysctl -w`, which is lost on the next reboot.
+  # 128 instances is a desktop default and kubelet alone holds 25-40; past it a watcher
+  # fails with "too many open files" and nothing crashes. OpenShift's numbers.
   echo ""
   echo "      Raising inotify limits (128 instances is a desktop default)"
   _sysctl_file=/etc/sysctl.d/99-mc2-inotify.conf
@@ -547,20 +489,16 @@ run_server_bootstrap() {
     echo "        /etc/sysctl.d/*. Leaving it will cost you pod logs, silently."
   fi
 
-  # The default 10% of /var is a lot to hand to logs on the filesystem that also holds
-  # every image, the BuildKit cache and the datastore. Alloy ships to Loki, so the
-  # journal is only a local tail. A drop-in, not an edit: upgrades rewrite the main
-  # config and take the setting with it.
+  # /var also holds every image, the BuildKit cache and the datastore, and Alloy ships
+  # the logs to Loki anyway. A drop-in, because upgrades rewrite the main config.
   echo "      Capping the systemd journal (default is 10% of /var)"
   mkdir -p /etc/systemd/journald.conf.d
   printf '[Journal]\nSystemMaxUse=500M\nSystemKeepFree=2G\n' >/etc/systemd/journald.conf.d/99-mc2.conf
   systemctl restart systemd-journald >/dev/null 2>&1 || true
   echo "      ✓ journal capped at 500M (/etc/systemd/journald.conf.d/99-mc2.conf)"
 
-  # The kubelet's 85%/80% defaults cannot recover here: image GC does not count the
-  # BuildKit cache PVC at all, so images plus cache fill the disk before it acts — and
-  # a full disk takes the datastore, the runtime and the API server with it. In
-  # config.yaml, not INSTALL_K3S_EXEC, so a re-run fixes an existing node too.
+  # Image GC does not count the BuildKit cache PVC, so the defaults fill the disk before
+  # it acts. In config.yaml, not INSTALL_K3S_EXEC, so a re-run fixes an existing node.
   echo "      Setting kubelet image-GC thresholds (defaults fill this disk)"
   mkdir -p /etc/rancher/k3s
   _k3s_cfg=/etc/rancher/k3s/config.yaml
@@ -573,8 +511,7 @@ run_server_bootstrap() {
     echo "          etcd-snapshot-schedule-cron: \"0 */6 * * *\""
     echo "          etcd-snapshot-retention: 20"
   else
-    # Snapshots are local-only here. Off-server upload (etcd-s3-*) needs bucket
-    # credentials, which do not belong in a public repo — mc2-terraform writes those.
+    # Snapshots stay local: off-server upload needs credentials, and this repo is public.
     printf 'kubelet-arg:\n  - "image-gc-high-threshold=70"\n  - "image-gc-low-threshold=60"\netcd-snapshot-schedule-cron: "0 */6 * * *"\netcd-snapshot-retention: 20\n' >"$_k3s_cfg"
     echo "      ✓ image GC at 70%%/60%%, etcd snapshots every 6h keeping 20 ($_k3s_cfg)"
     if systemctl is-active --quiet k3s 2>/dev/null; then
@@ -590,28 +527,15 @@ run_server_bootstrap() {
   if systemctl is-active --quiet k3s 2>/dev/null; then
     echo "      ✓ k3s already running — leaving it alone"
   else
-    # Three install-time-only decisions, none of which can be added to a running
-    # cluster without a reinstall or a restart:
-    #
-    #   --tls-san            k3s signs only 127.0.0.1 and the internal IP by default.
-    #                        Both the public and tailnet addresses go in, so a
-    #                        kubeconfig pointed at either verifies.
-    #   --secrets-encryption Otherwise every Secret sits base64-encoded in the
-    #                        datastore, where a snapshot or a cloned disk hands over
-    #                        every password. Not a defence against root on the node.
-    #   --cluster-init       Embedded etcd instead of SQLite. SQLite has no snapshot
-    #                        mechanism at all — `k3s etcd-snapshot` does not apply to
-    #                        it — so losing state.db loses the cluster, not just data.
-    #
-    # Traefik and servicelb stay: Traefik is the ingress we want, and klipper is what
-    # gives it an address on a single node.
+    # Three install-time-only decisions: --tls-san (the certificate is baked now),
+    # --secrets-encryption (or a stolen snapshot hands over every password) and
+    # --cluster-init (SQLite has no snapshot mechanism at all).
     tls_sans="--tls-san $public_ip"
     if [[ -n "$ts_ip" ]]; then
       echo "      ✓ tailscale detected ($ts_ip) — adding it to the API certificate"
       tls_sans+=" --tls-san $ts_ip"
     else
-      # Refuse rather than continue: a certificate without the tailnet SAN cannot be
-      # fixed without reinstalling k3s, and the firewall leaves no other route in.
+      # A certificate without the tailnet SAN cannot be fixed without reinstalling k3s.
       echo "      ✗ tailscale is installed but has no IPv4 address."
       echo "        The API certificate is baked at install time and the tailnet"
       echo "        address can only go in as a --tls-san, so continuing would"
@@ -634,10 +558,8 @@ run_server_bootstrap() {
   fi
   echo ""
 
-  # Confirm at-rest encryption actually came up, rather than assuming the flag took.
-  # Absolute path on purpose: /usr/local/bin is not always on root's PATH in a
-  # non-login shell, and a swallowed command-not-found here would report a false
-  # negative on a cluster that is in fact encrypted.
+  # Absolute path: /usr/local/bin is not always on root's PATH in a non-login shell,
+  # and a swallowed command-not-found would report a false negative.
   if /usr/local/bin/k3s secrets-encrypt status 2>/dev/null | grep -qi "enabled"; then
     echo "      ✓ secrets encrypted at rest"
   else
@@ -646,9 +568,8 @@ run_server_bootstrap() {
     echo "        add 'secrets-encryption: true' to /etc/rancher/k3s/config.yaml && systemctl restart k3s"
   fi
 
-  # The only signal that --cluster-init took: the command exists either way and fails
-  # on SQLite. A cluster that came up on SQLite looks completely healthy and simply
-  # has no backup mechanism, which is worth finding out now rather than at a restore.
+  # The only signal that --cluster-init took: a SQLite cluster looks healthy and simply
+  # has no backup mechanism.
   if /usr/local/bin/k3s etcd-snapshot ls >/dev/null 2>&1; then
     echo "      ✓ datastore is etcd — k3s etcd-snapshot works"
   else
@@ -660,10 +581,8 @@ run_server_bootstrap() {
 
   # --- [3/3] kubeconfig --------------------------------------------------------
   echo "[3/3] Writing a remote-ready kubeconfig"
-  # k3s names the cluster, context and user all "default", and picking the wrong
-  # "default" is how you deploy to the wrong cluster. The address is the tailnet one:
-  # with the firewall closed nothing else reaches 6443. The public-IP fallback is an
-  # announced degradation, not a silent one.
+  # k3s names cluster, context and user all "default", which is how you deploy to the
+  # wrong cluster. The address is the tailnet one; nothing else reaches 6443.
   if [[ -z "$ts_ip" ]]; then
     echo "      ! No tailscale address — falling back to the public IP $public_ip."
     echo "        The firewall drops 6443 there, so this kubeconfig will time out."
@@ -722,8 +641,7 @@ run_member_bootstrap() {
 
   banner "Local dev bootstrap"
 
-  # Asked before prerequisites, because the answer decides which toolchains are needed
-  # — there is no reason to make a frontend developer install helm.
+  # Before prerequisites: the answer decides which toolchains are installed.
   echo "[1/5] What will you be working on?"
   echo ""
   echo "  1) Frontend   — the three apps and the shared UI layer. No backend, no database."
@@ -734,13 +652,11 @@ run_member_bootstrap() {
   read -rp "  Select [1-4]: " _role
   echo ""
 
-  # mc2-configs is retired — settings are in mc2-k8s, credentials in Infisical.
+  # mc2-configs is retired: settings in mc2-k8s, credentials in Infisical.
   BASE_REPOS=(mc2-wrappers mc2-k8s)
   FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
-  # mc2-mailer-api is deliberately absent: it is an empty repo until the core platform
-  # is stable (its own README says so). Still reachable through "choose myself".
-  # Not optional: the Rust services declare it as a PATH dependency (../mc2-rust), so
-  # a checkout without it fails at `cargo build` with a missing Cargo.toml.
+  # mc2-mailer-api is absent on purpose (empty repo); mc2-rust is not optional, the
+  # Rust services declare it as a path dependency.
   BACKEND_REPOS=(mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
 
   ROLE="everything"
@@ -769,8 +685,7 @@ run_member_bootstrap() {
   echo "  Selected: $ROLE (${#REPOS[@]} repositories)"
   echo ""
 
-  # Which toolchains the selection actually needs. Derived from the repos rather than
-  # the role label, so "choose myself" gets the same treatment as a preset.
+  # Derived from the repos, not the role label, so "choose myself" behaves like a preset.
   NEEDS_PYTHON=false
   NEEDS_RUST=false
   NEEDS_NODE=false
@@ -781,8 +696,7 @@ run_member_bootstrap() {
       mc2-ui | mc2-operation-frontend | mc2-accounting-frontend | mc2-platform-frontend) NEEDS_NODE=true ;;
     esac
   done
-  # Only a backend checkout runs the cluster locally. A frontend developer points at
-  # the shared dev namespace and needs no kubeconfig at all.
+  # Only a backend checkout runs a local cluster; the frontend points at deployed dev.
   NEEDS_CLUSTER=false
   [[ "$NEEDS_PYTHON" == true || "$NEEDS_RUST" == true ]] && NEEDS_CLUSTER=true
 
@@ -801,11 +715,7 @@ run_member_bootstrap() {
     echo ""
   fi
 
-  # Offers, not silent installs: this runs on someone's own machine. Declining must
-  # return 0, or `set -e` aborts the script because the "failure" was answering N.
-  # For tools with no Homebrew formula. Same shape and same contract as brew_offer:
-  # offer, never install silently, and return 0 when declined so `set -e` does not read
-  # a refusal as a failure.
+  # Offers, never silent installs. Declining returns 0, or `set -e` reads it as failure.
   tool_offer() {
     local tool="$1" cmd="$2" why="$3"
     command -v "$tool" >/dev/null 2>&1 && return 0
@@ -827,13 +737,8 @@ run_member_bootstrap() {
     return 0
   }
 
-  # EVERY preset, including frontend-only, and therefore outside the conditionals:
-  # every mc2-dev.com hostname resolves to a tailnet address and the provider firewall
-  # drops the public IP, so a machine off the tailnet cannot reach dev at all. The
-  # frontend path is the lighter one precisely because it runs against deployed dev.
-  #
-  # A cask, not a formula: the macOS client is a GUI app shipping the CLI as a symlink,
-  # and the formula would install a daemon that fights it.
+  # Every preset: a machine off the tailnet cannot reach dev at all. A cask, not a
+  # formula — the formula installs a daemon that fights the GUI app.
   if ! command -v tailscale >/dev/null 2>&1 && [[ ! -d /Applications/Tailscale.app ]]; then
     if command -v brew >/dev/null 2>&1; then
       read -rp "      tailscale isn't installed (the only route to the dev tier). Install it now? [y/N] " ans
@@ -849,50 +754,36 @@ run_member_bootstrap() {
     echo "      ✓ tailscale present"
   fi
 
-  # Installed is not the same as joined, and the difference is invisible until a
-  # request times out. `tailscale status` exits non-zero when the daemon is not
-  # logged in, which is the check that distinguishes the two.
+  # Installed is not joined, and the difference is invisible until a request times out.
   if command -v tailscale >/dev/null 2>&1 && ! tailscale status >/dev/null 2>&1; then
     echo "      ! tailscale is installed but not signed in."
     echo "        Open Tailscale and sign in, then ask an admin to invite this machine"
     echo "        to the tailnet. Verify with:  tailscale status"
   fi
 
-  # gitleaks, for every preset too. Step [4/5] installs a pre-commit hook into every
-  # repo; without the binary that hook skips itself and says so, which is a scanner in
-  # name only. Every repo can stage a credential, so this is not preset-specific.
+  # Without the binary the pre-commit hook skips itself: a scanner in name only.
   brew_offer gitleaks gitleaks "blocks a commit that stages a credential"
 
-  # The hooks gate on `command -v <tool>`, so a machine without these gets a hook that
-  # quietly does nothing and finds out in CI — the failure mode the hooks exist to
-  # prevent. Versions must match what CI installs; a formatter at a different version
-  # is a formatter with a different opinion.
+  # The hooks gate on `command -v`, so without these they quietly do nothing.
   brew_offer shellcheck shellcheck "lints the shell scripts before a push"
   brew_offer shfmt shfmt "formats the shell scripts (pre-commit rewrites and re-stages)"
   brew_offer yamlfmt yamlfmt "formats YAML — k8s manifests, workflows, config templates"
   brew_offer taplo taplo "formats TOML — Cargo.toml and pyproject.toml"
   brew_offer terraform terraform "formats and validates mc2-terraform (its CI checks both)"
-  # Its own tap, not homebrew-core — `brew install tflint` finds nothing.
+  # Its own tap: `brew install tflint` finds nothing.
   brew_offer tflint terraform-linters/tap/tflint "lints mc2-terraform (pre-push runs it)"
 
   if [[ "$NEEDS_CLUSTER" == true ]]; then
     brew_offer kubectl kubectl "talks to the cluster"
     brew_offer helm helm "installs Traefik locally"
-    # The pipeline runs in the cluster, so reading it means talking to the cluster.
-    # Both work off the server kubeconfig; argocd additionally wants one
-    # `argocd login argocd.mc2-dev.com`, whose session then persists.
+    # Both read the server kubeconfig; argocd additionally wants one `argocd login`.
     brew_offer argo argo "reads the build pipeline (argo workflows)"
     brew_offer argocd argocd "reads what is deployed (argo cd)"
-    # Its own tap, like tflint — `brew install infisical` finds an unrelated formula.
+    # Its own tap: `brew install infisical` finds an unrelated formula.
     brew_offer infisical infisical/get-cli/infisical "injects each service's configuration at run time"
 
-    # Installed is not the same as logged in, and the difference only shows up when a
-    # service fails to start. Unlike `tailscale status` this exits 0 either way, so the
-    # check reads the output: the CLI says so in one line when no profile exists.
-    #
-    # One login per machine. The domain is remembered in the profile, so nothing after
-    # this needs the flag — and the instance is on the tailnet, so the step above has
-    # to have worked first.
+    # This exits 0 either way, so the check reads the output. One login per machine;
+    # the domain is remembered in the profile.
     if command -v infisical >/dev/null 2>&1 \
       && infisical profile list 2>&1 | grep -q 'No login profiles found'; then
       read -rp "      infisical isn't logged in. Sign in now (opens a browser)? [y/N] " ans
@@ -905,36 +796,28 @@ run_member_bootstrap() {
     fi
   fi
 
-  # The language toolchains virtualize --setup shells out to. Without these it fails
-  # partway through, after the configs are already written — so they are checked here,
-  # before anything is cloned, rather than discovered later.
+  # virtualize --setup shells out to these and would fail partway, after writing configs.
   if [[ "$NEEDS_PYTHON" == true ]]; then
     brew_offer uv uv "Python toolchain — replaces pip and venv"
   fi
   if [[ "$NEEDS_RUST" == true ]]; then
-    # cargo already refuses an undeclared import by failing to compile; nothing warns
-    # about a declared dependency nothing uses. No formula, so cargo installs it.
+    # Nothing else warns about a declared dependency nothing uses. No formula exists.
     tool_offer cargo-machete "cargo install cargo-machete" \
       "reports a dependency declared in Cargo.toml and never used"
   fi
   if [[ "$NEEDS_NODE" == true ]]; then
     brew_offer node node "runs the Nuxt apps"
-    # brew ships pnpm 12; the repos pin pnpm 11 via package.json's packageManager
-    # field, and pnpm self-manages down to it (manage-package-manager-versions,
-    # on by default since pnpm 10). So the major version here does not matter.
+    # The major does not matter: packageManager pins it and pnpm self-manages down.
     brew_offer pnpm pnpm "package manager for every JS repo"
   fi
   if [[ "$NEEDS_RUST" == true ]] && ! command -v cargo >/dev/null 2>&1; then
-    # Deliberately NOT `brew install rustup`: that formula is keg-only, no longer ships
-    # rustup-init, and installs no toolchain on its own — so cargo still would not
-    # exist afterwards. The upstream installer places cargo at ~/.cargo/bin and adds it
-    # to the shell profile itself, which is what every Rust toolchain doc assumes.
+    # Not `brew install rustup`: that formula is keg-only and installs no toolchain, so
+    # cargo still would not exist afterwards.
     read -rp "      cargo isn't installed (builds the Rust services). Install rustup now? [y/N] " ans
     if [[ "$ans" =~ ^[Yy]$ ]]; then
       run_with_spinner "rustup (installs the stable toolchain)" \
         bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
-      # Puts cargo on PATH for the rest of THIS script; rustup-init has already added
-      # it to the shell profile for later sessions.
+      # PATH for the rest of this script; rustup-init handles later sessions.
       if [[ -f "$HOME/.cargo/env" ]]; then
         # shellcheck source=/dev/null
         source "$HOME/.cargo/env"
@@ -947,8 +830,7 @@ run_member_bootstrap() {
   FOUND=(git Homebrew tailscale gitleaks)
   command -v git >/dev/null 2>&1 || MISSING+=("git
         Run: xcode-select --install")
-  # Listed unconditionally, above the preset blocks, because it gates every preset:
-  # the dev tier resolves only on the tailnet.
+  # Unconditional: it gates every preset, since dev resolves only on the tailnet.
   if ! command -v gitleaks >/dev/null 2>&1; then
     MISSING+=("gitleaks
         Run: brew install gitleaks
@@ -1057,10 +939,7 @@ run_member_bootstrap() {
   done
   echo ""
 
-  # `core.hooksPath` at one committed directory, not a copy in each untracked
-  # .git/hooks — updating a hook is then a git pull. Delegated to virtualize, which is
-  # the tool run repeatedly; done here too because a new member can commit before they
-  # ever run it.
+  # core.hooksPath at one committed directory, so updating a hook is a git pull.
   if [[ -x "$MC2_DIR/mc2-wrappers/virtualize" ]]; then
     echo "      Installing git hooks (core.hooksPath -> mc2-wrappers/hooks)"
     "$MC2_DIR/mc2-wrappers/virtualize" --install-hooks 2>&1 | sed 's/^/      /'
@@ -1076,8 +955,7 @@ run_member_bootstrap() {
   [[ "$(readlink /usr/local/bin/virtualize 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/virtualize" ]] && NEED_LINK=true
   [[ "$(readlink /usr/local/bin/flow 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/flow" ]] && NEED_LINK=true
 
-  # A custom selection can leave mc2-wrappers unticked. Linking anyway would create a
-  # dangling symlink and report success — the worst of both.
+  # A custom selection can leave mc2-wrappers unticked; linking anyway dangles.
   if [[ ! -d "$MC2_DIR/mc2-wrappers" ]]; then
     NEED_LINK=false
     echo "      ! mc2-wrappers was not cloned — skipping. 'kube', 'virtualize' and 'flow' will"
@@ -1094,9 +972,8 @@ run_member_bootstrap() {
   fi
   echo ""
 
-  # Local runs on Docker Desktop, whose ClusterIPs the host cannot reach — unlike dev
-  # and prod, where the node advertises the service CIDR as a tailscale subnet route.
-  # The agent keeps that one tunnel up across reboots so nobody has to know it exists.
+  # Docker Desktop's ClusterIPs are unreachable from the host, unlike dev and prod where
+  # the node advertises the service CIDR. The agent keeps that tunnel up across reboots.
   if [[ -x "$MC2_DIR/mc2-wrappers/virtualize" ]]; then
     if launchctl print "gui/$UID/com.mc2.fwd.local" >/dev/null 2>&1; then
       echo "      ✓ local forwards already running as a launchd agent"
@@ -1114,9 +991,8 @@ run_member_bootstrap() {
   elif [[ -d "$MC2_DIR/mc2-bootstrap" ]]; then
     echo "Note: $MC2_DIR/mc2-bootstrap already exists — leaving $SCRIPT_DIR where it is."
   elif [[ "$(basename "$SCRIPT_DIR")" != "mc2-bootstrap" || ! -d "$SCRIPT_DIR/.git" ]]; then
-    # The whole premise of this script is that it gets copied around on its own,
-    # so $SCRIPT_DIR is often just whatever directory it was dropped in — /tmp,
-    # ~/Downloads. Moving THAT would drag every unrelated file with it.
+    # This script gets copied around on its own, so $SCRIPT_DIR is often /tmp or
+    # ~/Downloads; moving that would drag every unrelated file with it.
     echo "Note: $SCRIPT_DIR is not an mc2-bootstrap checkout — leaving it where it is."
     echo "      Clone it properly if you want it alongside the other repos:"
     echo "        git clone git@github.com:${GITHUB_OWNER}/mc2-bootstrap.git $MC2_DIR/mc2-bootstrap"
@@ -1127,14 +1003,10 @@ run_member_bootstrap() {
   echo ""
 
   echo "--------------------"
-  # Keyed on what was actually cloned, not the preset name: a custom selection of only
-  # frontend repos was never offered kubectl, so telling it to run `kube --reboot`
-  # would be advice that cannot work.
+  # Keyed on what was cloned, not the preset: advice that cannot work is worse than none.
   if [[ "$NEEDS_CLUSTER" == false ]]; then
-    # No local cluster in this path on purpose: the dev tier's APIs are deployed, so
-    # a frontend developer needs an app and a network, not Kubernetes on their Mac.
-    # Name a project that was actually cloned — a custom selection may not include
-    # platform-frontend, and an example pointing at a missing directory is noise.
+    # Name a project that was actually cloned; an example pointing at a missing
+    # directory is noise.
     _example_app="mc2-platform-frontend"
     _example_port=":3001"
     for _candidate in mc2-platform-frontend mc2-operation-frontend mc2-accounting-frontend mc2-ui; do
