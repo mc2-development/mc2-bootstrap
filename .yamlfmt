@@ -1,99 +1,16 @@
-# Shared yamlfmt config, copied into every repo that has YAML worth formatting.
-# See taplo.toml (its TOML equivalent) and hooks/README.md for the pattern: one
-# config, defined once, copied because CI checks out one repo at a time and cannot
-# resolve a sibling path.
-#
-# yamlfmt (github.com/google/yamlfmt), not prettier: a single static Go binary with
-# no runtime, the same shape as taplo for TOML — this workspace already treats "no
-# extra ecosystem, one pinned binary" as a principle, and prettier would mean a
-# Node/npm dependency in repos that are otherwise Rust, Python or plain shell.
-#
-# Every setting below was checked against real files before being set, not assumed —
-# two of yamlfmt's three relevant defaults were wrong for this workspace:
-# Anything a package manager owns, never a person — running a formatter inside
-# node_modules is pointless work today and a correctness risk the day some vendored
-# package's own YAML happens to be sensitive to exact formatting.
-#
-# pnpm-lock.yaml is the same principle, learned the expensive way: `virtualize
-# --format` (named --format-all at the time) walked into it and (a) stripped its
-# leading `---` — a stylistic,
-# no-second-document marker that yamlfmt's document-start preservation does not
-# treat as worth keeping, unlike the genuinely multi-document k8s manifests this
-# config was tuned against — and (b) rewrote one long dependency key into YAML's
-# explicit `? key` / `: value` complex-mapping form, which pnpm's own writer never
-# produces and its lockfile parser is not guaranteed to accept the same way. Caught
-# by reviewing the diff before it was ever committed, not by anything automatic.
-#
-# The fix is exclusion, not tuning yamlfmt harder to be a no-op here: this file is
-# machine-owned and machine-read by a specific tool with its own format
-# expectations, the same category as node_modules, not something a general YAML
-# formatter should touch regardless of how close it can get to a clean diff.
-# The exclude patterns above use ** (any depth), which yamlfmt does NOT treat as a
-# doublestar glob by default — `-print_conf` shows `doublestar: false` even with
-# these patterns present, and the standard matcher was silently letting both
-# patterns fall through, which is exactly how a lockfile got reformatted despite
-# the node_modules exclude apparently working (it did not; both were unenforced).
-#
-# The two overlay kustomizations are the third instance of the same category, and
-# the one that would have broken a deploy. mc2-k8s's pipeline runs `kustomize edit
-# set image` in the overlay directory environments.conf names for the target
-# environment, and commits that file, and kustomize re-serialises the WHOLE file
-# with indentless sequences — the opposite of indentless_arrays: false below.
-# Measured, not assumed: running it in the alpine/k8s:1.36.4 image the pipeline
-# uses rewrote 226 lines of the dev kustomization. Left in scope, every automated
-# deploy would land a bot commit that fails this repo's own yamlfmt check, so the
-# merge button would go red on a deploy nobody could fix without reverting the
-# formatter.
-#
-# The paths are server/dev and server/prod, spelled out, NOT
-# `**/overlays/server/*/kustomization.yaml`: overlays/server/ also holds infisical
-# and observability, which are hand-written and must stay formatted. A wildcard
-# here would quietly drop two files out of the formatter's scope — the same shape
-# of silent miss as the dev/prod patterns that matched nothing after overlays/ was
-# regrouped by cluster. Only these two are ever passed to `kustomize edit`.
-#
-# No pattern here matches anything in the other eighteen repos, so this file stays
-# byte-identical across the workspace.
+# One config, copied verbatim into every repo: CI checks out one repo at a time.
+# Required: without it the ** patterns below are silently unenforced.
 doublestar: true
 exclude:
   - "**/node_modules/**"
   - "**/pnpm-lock.yaml"
+  # kustomize edit rewrites these two on every deploy in its own list style.
   - "**/overlays/server/dev/kustomization.yaml"
   - "**/overlays/server/prod/kustomization.yaml"
 
 formatter:
   type: basic
-  # Off (yamlfmt's own default): every manifest here uses the standard "+2" list
-  # style — `containers:` then `  - name: postgres`, one level deeper than the key.
-  # The on/indentless style (dash flush with the key) is NOT used anywhere once
-  # actually surveyed across all 41 kustomization.yaml files plus every manifest.
   indentless_arrays: false
-  # On: the default removes blank lines between comment blocks and the field they
-  # document. Every manifest here uses a blank line as a paragraph break inside a
-  # comment; collapsing them turns readable prose into a wall of text.
   retain_line_breaks: true
-  # On: without it, a folded block scalar (`>-`) gets its line breaks collapsed
-  # toward one line. The CSP header in platform/traefik/traefik-middleware.yaml is
-  # written one directive per line for readability — safe to do either way since a
-  # folded scalar's line breaks become plain spaces when PARSED regardless (that is
-  # what folded means, as opposed to `|` literal), so reformatting could not change
-  # the actual header string. This keeps the human-chosen layout rather than
-  # "fixing" something that was never wrong.
   scan_folded_as_literal: true
-  #
-  # include_document_start is DELIBERATELY ABSENT, not set to true or false.
-  #
-  # This repo has no single convention for `---`: 33 files are genuinely
-  # multi-document (platform/policy/networkpolicy.yaml alone is 24 resources in one
-  # file) and correctly use it, while single-resource files correctly have none. A
-  # boolean here is wrong either way — `true` forces `---` onto files that never had
-  # one (proven: it added a leading `---` to all 41 kustomization.yaml files, none of
-  # which want it), and `false` strips the marker from every multi-document file,
-  # which does not just look different — `kubectl`/kustomize split resources on that
-  # marker, so removing it changes what the file MEANS.
-  #
-  # Leaving the key out was verified to do the right thing on both kinds: it
-  # preserves whatever document markers a file already has, adding and removing
-  # none. That is what "everything gets a formatter" should mean for this repo —
-  # consistent indentation and spacing, not homogenising a distinction the files
-  # are using on purpose.
+  # include_document_start stays unset: files keep the --- markers they have.
