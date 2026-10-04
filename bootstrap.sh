@@ -14,8 +14,10 @@ WORK_DIR="$HOME/Work"
 MC2_DIR="$WORK_DIR/mc2"
 REPOS=(mc2-wrappers mc2-k8s mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
 
-# The default name, so ssh finds it with no ~/.ssh/config.
-SSH_KEY="$HOME/.ssh/id_ed25519"
+# The default name, so ssh finds it with no ~/.ssh/config. Overridable, because a Mac
+# with a work and a personal GitHub account has one key each and the default name is
+# usually the personal one: MC2_SSH_KEY=~/.ssh/id_work ./bootstrap.sh --member
+SSH_KEY="${MC2_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 
 # --- server mode settings -----------------------------------------------------
 
@@ -916,17 +918,35 @@ run_member_bootstrap() {
     read -rp "      Press enter once you've added it..." _
   fi
 
-  echo "      Testing connection..."
-  until ssh -T git@github.com -o IdentitiesOnly=yes -i "$SSH_KEY" 2>&1 | grep -q "successfully authenticated"; do
+  # Reaching a private repo, not merely authenticating. Every valid GitHub key passes
+  # "successfully authenticated", so the old check went green on a personal account
+  # with no access here and the run failed at the clone, blaming the repository.
+  whoami_gh() {
+    ssh -T git@github.com -o IdentitiesOnly=yes -i "$SSH_KEY" 2>&1 \
+      | sed -n 's/^Hi \([^!]*\)!.*/\1/p'
+  }
+
+  echo "      Testing access with $SSH_KEY"
+  until GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes" \
+    git ls-remote "git@github.com:${GITHUB_OWNER}/mc2-wrappers.git" >/dev/null 2>&1; do
+    _who="$(whoami_gh)"
     echo ""
-    echo "      Couldn't authenticate yet. Make sure this public key is added to your"
-    echo "      GitHub account (https://github.com/settings/ssh/new):"
-    echo ""
-    cat "$SSH_KEY.pub"
+    if [[ -n "$_who" ]]; then
+      echo "      This key authenticates as '$_who', which cannot see ${GITHUB_OWNER}'s"
+      echo "      repositories. Either that account needs an invitation, or this is the"
+      echo "      wrong key — a Mac with a work and a personal account has one of each:"
+      echo ""
+      echo "        MC2_SSH_KEY=~/.ssh/id_work ./bootstrap.sh --member"
+    else
+      echo "      Couldn't authenticate. Add this public key to the GitHub account that"
+      echo "      belongs to ${GITHUB_OWNER} (https://github.com/settings/ssh/new):"
+      echo ""
+      cat "$SSH_KEY.pub"
+    fi
     echo ""
     read -rp "      Press enter to retry..." _
   done
-  echo "      ✓ SSH access confirmed"
+  echo "      ✓ access confirmed as $(whoami_gh)"
   echo ""
 
   echo "[4/5] Cloning into $MC2_DIR"
