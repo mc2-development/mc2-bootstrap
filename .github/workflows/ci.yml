@@ -1,13 +1,8 @@
 name: CI
 
-# This repo had no CI. It is one script, but it is the script that provisions a developer
-# machine and the production server — it installs k3s with the flags that bake the API
-# certificate, disables ufw, and writes the kubeconfig everything else depends on. A typo
-# here is discovered on a fresh box, which is the worst place to discover one.
-#
-# The same checks run locally as a pre-push hook (mc2-wrappers/hooks/pre-push). That is a
-# duplicate on purpose: the hook is skippable, so it makes failure cheap rather than
-# binding. This is the binding half.
+# One script, but the one that provisions a developer machine and the production server,
+# where a typo is discovered on a fresh box. The pre-push hook runs the same checks and is
+# skippable; this is the binding half.
 
 on:
   pull_request:
@@ -18,8 +13,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Nothing by default. Each job grants only what it needs, so a job added
-# later starts with no token scope rather than inheriting write access.
 permissions: {}
 
 jobs:
@@ -33,12 +26,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install yamlfmt
-        # `go install` puts the binary in GOPATH/bin, which is NOT on PATH for the
-        # next step by default — that gap is exactly what broke the first run of
-        # this workflow ("yamlfmt: command not found", exit 127) even though the
-        # install itself succeeded. $GITHUB_PATH is the fix: appending to it here
-        # makes the directory available to every step after this one, not just
-        # this shell.
+        # GOPATH/bin is not on PATH for later steps; $GITHUB_PATH is what adds it.
         run: |
           go install github.com/google/yamlfmt/cmd/yamlfmt@v0.21.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
@@ -47,22 +35,14 @@ jobs:
         run: yamlfmt -lint '**/*.yaml' '**/*.yml'
 
       - name: Install shfmt
-        # Same `go install` + $GITHUB_PATH pair as yamlfmt above, and pinned to the
-        # version brew ships, so a developer's shfmt and this one cannot disagree about
-        # what "formatted" means.
+        # Pinned to the version brew ships, so a laptop and CI agree on "formatted".
         run: |
           go install mvdan.cc/sh/v3/cmd/shfmt@v3.14.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: shfmt
-        # -d, not -w: CI reports, it never rewrites. -i 2 because these scripts have zero
-        # tabs, and -ci/-bn because they already indent case branches and already start
-        # continuation lines with && — both flags pin the existing style.
-        #
-        # NOT -kp. It claims to keep column alignment and instead cascades each element's
-        # old column when it splits a one-line case branch, turning it into a staircase.
-        # It also reports fewer changed lines than the flags above, so a churn count alone
-        # recommends it. Do not.
+        # -d, never -w: CI reports, it does not rewrite. Not -kp, which turns a split
+        # case branch into a staircase.
         run: shfmt -i 2 -ci -bn -d bootstrap.sh
 
       - name: shellcheck
@@ -71,8 +51,7 @@ jobs:
       - name: bash syntax
         run: bash -n bootstrap.sh
 
-      # --help must work without arguments, a TTY, or anything installed. It is the first
-      # thing anyone runs on a machine where nothing is set up yet, and `set -eu` plus an
-      # unset variable in the usage path would turn that into a silent exit 1.
+      # The first thing anyone runs on a bare machine, where `set -eu` plus an unset
+      # variable in the usage path would be a silent exit 1.
       - name: help runs on a bare machine
         run: bash bootstrap.sh --help
