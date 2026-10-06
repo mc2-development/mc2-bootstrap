@@ -782,6 +782,10 @@ run_member_bootstrap() {
 
   if [[ "$NEEDS_CLUSTER" == true ]]; then
     brew_offer kubectl kubectl "talks to the cluster"
+    # Every backend service logs JSON for Loki, which is unreadable in a terminal.
+    # `kube --logs` and `virtualize --start` pipe through it, and fall back to raw
+    # JSON when it is absent, so declining costs readability and nothing else.
+    brew_offer hl hl "renders the services' JSON logs readably"
     brew_offer helm helm "installs Traefik locally"
     # Both read the server kubeconfig; argocd additionally wants one `argocd login`.
     brew_offer argo argo "reads the build pipeline (argo workflows)"
