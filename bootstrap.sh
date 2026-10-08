@@ -12,7 +12,7 @@ GITHUB_OWNER="${GITHUB_OWNER:-mc2-development}"
 
 WORK_DIR="$HOME/Work"
 MC2_DIR="$WORK_DIR/mc2"
-REPOS=(mc2-wrappers mc2-k8s mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
+REPOS=(mc2-wrappers mc2-k8s mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-webhooks mc2-realtime mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
 
 # The default name, so ssh finds it with no ~/.ssh/config. Overridable, because a Mac
 # with a work and a personal GitHub account has one key each and the default name is
@@ -143,7 +143,7 @@ run_with_spinner() {
 # Empty repos: selectable, never ticked by default, since cloning one gets a bare dir.
 repo_note() {
   case "$1" in
-    mc2-mailer-api) echo " — placeholder, not started" ;;
+    mc2-mailer-api | mc2-webhooks | mc2-realtime) echo " — placeholder, not started" ;;
     *) echo "" ;;
   esac
 }
@@ -977,9 +977,13 @@ run_member_bootstrap() {
   if [[ -x "$MC2_DIR/mc2-wrappers/virtualize" ]]; then
     echo "      Installing git hooks (core.hooksPath -> mc2-wrappers/hooks)"
     "$MC2_DIR/mc2-wrappers/virtualize" --install-hooks 2>&1 | sed 's/^/      /'
+    # Both zsh and fish: the login shell on macOS is zsh, but a terminal here may open
+    # fish, and a completion missing from the shell in use reads as one that is broken.
+    echo "      Installing tab-completions (zsh and fish)"
+    "$MC2_DIR/mc2-wrappers/virtualize" --install-completions 2>&1 | sed 's/^/      /'
   else
-    echo "      ! mc2-wrappers not cloned — no git hooks installed."
-    echo "        After cloning it: virtualize --install-hooks"
+    echo "      ! mc2-wrappers not cloned — no git hooks or completions installed."
+    echo "        After cloning it: virtualize --install-hooks && virtualize --install-completions"
   fi
   echo ""
 
