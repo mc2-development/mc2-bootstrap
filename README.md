@@ -40,8 +40,9 @@ services, resolved through uv rather than a path.
 
 Frontend is deliberately the lighter path: those repos run against the deployed dev
 tier, so that checkout needs no Docker, no kubectl and no kubeconfig — but it does
-need tailscale, precisely *because* it runs against the deployed tier. `mc2-mailer-api`
-is shown but unticked — it is an empty repo until the core platform is stable.
+need tailscale, precisely *because* it runs against the deployed tier. `mc2-mailer-api`,
+`mc2-webhooks` and `mc2-realtime` are shown but unticked — each is an empty repo holding
+only a README that records its boundary, until something pulls on it.
 
 Doesn't touch the cluster. Afterwards (backend/everything):
 
