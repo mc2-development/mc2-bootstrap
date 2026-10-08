@@ -1068,7 +1068,7 @@ run_member_bootstrap() {
     echo ""
     echo "Reaching *-dev.mc2-dev.com needs Tailscale — ask to be added to the network."
     echo "Move one app to another tier with 'virtualize -p <project> --switch-dev' (or"
-    echo "--switch-local / --switch-prod); 'virtualize --envs' shows where each one points."
+    echo "--switch-local / --switch-prod); 'virtualize --tiers' shows where each one points."
   else
     echo "You're set up. A few manual steps left to bring the cluster up:"
     echo ""
