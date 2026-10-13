@@ -41,6 +41,9 @@ MC2_TS_HOSTNAME="${MC2_TS_HOSTNAME:-mc2}"
 
 # Advertised to the tailnet; must match mc2-k8s/overlays/<env>/data/clusterips.yaml.
 K3S_SERVICE_CIDR="10.43.0.0/16"
+# The tailnet's control plane. Ours since tailscale's trial ended; mc2-k8s/tools/headscale
+# serves it, and it is the one mc2 hostname that answers on the public address.
+MC2_LOGIN_SERVER="${MC2_TS_LOGIN_SERVER:-https://headscale.mc2-dev.com:8443}"
 
 MODE="member"
 IP_OVERRIDE=""
@@ -405,9 +408,23 @@ run_server_bootstrap() {
     echo "      ✓ tailscale up, already advertising $K3S_SERVICE_CIDR"
   else
     echo ""
+    # The control plane is ours: headscale, in the cluster this script is about to
+    # install. That is less circular than it reads — headscale only has to be reachable
+    # when a node registers, and on a rebuild it is already running from the PVC.
+    _ts_login=()
+    [[ -n "${MC2_TS_LOGIN_SERVER:-}" ]] && _ts_login=(--login-server="$MC2_TS_LOGIN_SERVER")
     if [[ -n "${MC2_TS_AUTHKEY:-}" ]]; then
+      if [[ -z "${MC2_TS_LOGIN_SERVER:-}" ]]; then
+        echo "Refusing: MC2_TS_AUTHKEY is set but MC2_TS_LOGIN_SERVER is not."
+        echo "  A headscale key is not a tailscale key. Without the login server this"
+        echo "  would be offered to tailscale.com, which rejects it — and the node would"
+        echo "  join nothing while reporting success."
+        exit 1
+      fi
       echo "      Bringing tailscale up with a pre-authorized key as '$MC2_TS_HOSTNAME'."
+      echo "      Control plane: $MC2_TS_LOGIN_SERVER"
       tailscale up \
+        "${_ts_login[@]}" \
         --authkey="$MC2_TS_AUTHKEY" \
         --hostname="$MC2_TS_HOSTNAME" \
         --advertise-routes="$K3S_SERVICE_CIDR" \
@@ -415,7 +432,7 @@ run_server_bootstrap() {
       echo ""
       echo "      ✓ tailscale up as '$MC2_TS_HOSTNAME', advertising $K3S_SERVICE_CIDR"
       echo "        The route is approved by the tailnet policy (autoApprovers for"
-      echo "        tag:server), which mc2-terraform/server owns. Nothing to click."
+      echo "        tag:server), which mc2-k8s/tools/headscale owns. Nothing to click."
     elif [[ -n "$UNATTENDED" ]]; then
       echo "Refusing: MC2_UNATTENDED is set but MC2_TS_AUTHKEY is not."
       echo "  Without a key 'tailscale up' blocks on a browser URL nobody is watching,"
@@ -423,14 +440,15 @@ run_server_bootstrap() {
       exit 1
     else
       echo "      Bringing tailscale up and advertising the cluster service CIDR."
-      echo "      A URL follows — open it to authenticate this machine."
+      echo "      A URL follows — open it, then register the node on the headscale host:"
+      echo "        headscale auth register --user <you> --auth-id <id from the URL>"
       echo ""
-      tailscale up --hostname="$MC2_TS_HOSTNAME" --advertise-routes="$K3S_SERVICE_CIDR" --accept-dns=false
+      tailscale up "${_ts_login[@]}" --hostname="$MC2_TS_HOSTNAME" --advertise-routes="$K3S_SERVICE_CIDR" --accept-dns=false
       echo ""
       echo "      ✓ tailscale up as '$MC2_TS_HOSTNAME', advertising $K3S_SERVICE_CIDR"
       echo "      ! The route is NOT live until it is approved — by the tailnet policy"
-      echo "        if tag:server auto-approves it, otherwise in the admin console:"
-      echo "        Machines -> this host -> Subnets -> approve $K3S_SERVICE_CIDR"
+      echo "        if tag:server auto-approves it, otherwise on the headscale host:"
+      echo "        headscale nodes approve-routes --identifier <id> --routes $K3S_SERVICE_CIDR"
       echo "        Until then a laptop can reach this host but not the ClusterIPs behind it."
     fi
   fi
@@ -543,7 +561,7 @@ run_server_bootstrap() {
       echo "        address can only go in as a --tls-san, so continuing would"
       echo "        produce a cluster this machine cannot be administered through."
       echo ""
-      echo "        Fix it, then re-run:  tailscale up --advertise-routes=$K3S_SERVICE_CIDR --accept-dns=false"
+      echo "        Fix it, then re-run:  tailscale up --login-server=\$MC2_TS_LOGIN_SERVER --advertise-routes=$K3S_SERVICE_CIDR --accept-dns=false"
       exit 1
     fi
     run_with_spinner "curl get.k3s.io | sh ($K3S_VERSION)" \
@@ -760,10 +778,16 @@ run_member_bootstrap() {
   fi
 
   # Installed is not joined, and the difference is invisible until a request times out.
+  # The client is tailscale's; the control plane is not, so there is no tailscale.com
+  # account to sign into — the app has to be pointed at ours first.
   if command -v tailscale >/dev/null 2>&1 && ! tailscale status >/dev/null 2>&1; then
-    echo "      ! tailscale is installed but not signed in."
-    echo "        Open Tailscale and sign in, then ask an admin to invite this machine"
-    echo "        to the tailnet. Verify with:  tailscale status"
+    echo "      ! tailscale is installed but not joined."
+    echo "        This tailnet is coordinated by headscale, so sign-in is two steps:"
+    echo "          1. Tailscale -> account icon -> Log in -> the ⋯ menu ->"
+    echo "             'Use custom coordination server' -> $MC2_LOGIN_SERVER"
+    echo "          2. The app shows a URL ending /register/<id>. Send that id to an"
+    echo "             admin, who runs:  headscale auth register --user <you> --auth-id <id>"
+    echo "        Verify with:  tailscale status"
   fi
 
   # Without the binary the pre-commit hook skips itself: a scanner in name only.
@@ -1070,7 +1094,8 @@ run_member_bootstrap() {
     echo "process. If --start says you are not logged in:"
     echo "  infisical login --domain https://infisical.mc2-dev.com"
     echo ""
-    echo "Reaching *-dev.mc2-dev.com needs Tailscale — ask to be added to the network."
+    echo "Reaching *-dev.mc2-dev.com needs the tailnet — point Tailscale at"
+    echo "$MC2_LOGIN_SERVER and ask an admin to register this machine."
     echo "Move one app to another tier with 'virtualize -p <project> --switch-dev' (or"
     echo "--switch-local / --switch-prod); 'virtualize --tiers' shows where each one points."
   else
