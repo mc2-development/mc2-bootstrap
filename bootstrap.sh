@@ -672,7 +672,6 @@ run_member_bootstrap() {
   read -rp "  Select [1-4]: " _role
   echo ""
 
-  # mc2-configs is retired: settings in mc2-k8s, credentials in Infisical.
   BASE_REPOS=(mc2-wrappers mc2-k8s)
   FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
   # mc2-mailer-api is absent on purpose (empty repo); mc2-rust is not optional, the
