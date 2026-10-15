@@ -46,7 +46,7 @@ The tools, and why each is on the list:
 No IDE is installed: `virtualize --setup` writes run configurations for JetBrains and
 VS Code alike, so the choice stays yours. Two steps stay manual because no script can
 take them: switching on Kubernetes in Docker Desktop, and an admin registering this Mac
-on the tailnet (`kube --tailnet register <id> <user>`).
+on the tailnet (`mc2 --tailnet register <id> <user>`).
 
 **`tailscale` is checked for every preset, including Frontend.** Every
 `mc2-dev.com` hostname resolves to the server's tailnet address and the provider
@@ -63,15 +63,15 @@ services, resolved through uv rather than a path.
 
 Frontend is deliberately the lighter path: those repos run against the deployed dev
 tier, so that checkout needs no Docker, no kubectl and no kubeconfig — but it does
-need tailscale, precisely *because* it runs against the deployed tier. `mc2-mailer-api`,
-`mc2-webhooks` and `mc2-realtime` are shown but unticked — each is an empty repo holding
-only a README that records its boundary, until something pulls on it.
+need tailscale, precisely *because* it runs against the deployed tier. `mc2-webhooks` and
+`mc2-realtime` are shown but unticked — each is an empty repo holding only a README that
+records its boundary, until something pulls on it.
 
 Doesn't touch the cluster. Afterwards (backend/everything), with Docker's Kubernetes on:
 
 ```bash
-kube --install-traefik   # one-time
-kube --reboot
+mc2 --install   # one-time
+mc2 --reboot
 virtualize --setup
 ```
 
@@ -104,7 +104,7 @@ With no terminal there is nothing to watch, so `/var/log/mc2-bootstrap.log` is t
 — `tail -f` it from the provider's web console.
 
 Repairing an existing box by hand is the same command over ssh, with the same
-variables; `kube --tailnet key server` mints the tailnet key:
+variables; `mc2 --tailnet key server` mints the tailnet key:
 
 ```bash
 scp bootstrap.sh root@<TAILNET_IP>:/tmp/

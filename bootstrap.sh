@@ -67,7 +67,7 @@ Everything is tee'd to /var/log/mc2-bootstrap.log.
 
   MC2_SERVER_PASSPHRASE=...   The accident guard.
   MC2_CONFIRM_HOSTNAME=...    Must equal `hostname`: names the target in advance.
-  MC2_TS_AUTHKEY=...          Pre-authorized, tagged, single-use (kube --tailnet key server).
+  MC2_TS_AUTHKEY=...          Pre-authorized, tagged, single-use (mc2 --tailnet key server).
   MC2_TS_LOGIN_SERVER=...     The headscale URL the key belongs to.
   MC2_DISABLE_UFW=1           Required only when ufw is active: it breaks pod networking.
 EOF
@@ -145,7 +145,7 @@ run_with_spinner() {
 # Empty repos: selectable, never ticked by default, since cloning one gets a bare dir.
 repo_note() {
   case "$1" in
-    mc2-mailer-api | mc2-webhooks | mc2-realtime) echo " — placeholder, not started" ;;
+    mc2-webhooks | mc2-realtime) echo " — placeholder, not started" ;;
     *) echo "" ;;
   esac
 }
@@ -417,7 +417,7 @@ run_server_bootstrap() {
     else
       echo "Refusing: MC2_TS_AUTHKEY is not set."
       echo "  Without a key 'tailscale up' blocks on a browser URL nobody is watching."
-      echo "  Terraform mints one; by hand: kube --tailnet key server"
+      echo "  Terraform mints one; by hand: mc2 --tailnet key server"
       exit 1
     fi
   fi
@@ -617,9 +617,8 @@ run_member_bootstrap() {
 
   BASE_REPOS=(mc2-wrappers mc2-k8s)
   FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
-  # mc2-mailer-api is absent on purpose (empty repo); mc2-rust is not optional, the
-  # Rust services declare it as a path dependency.
-  BACKEND_REPOS=(mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
+  # mc2-rust is not optional, the Rust services declare it as a path dependency.
+  BACKEND_REPOS=(mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-mailer-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
 
   ROLE="everything"
   case "$_role" in
@@ -653,8 +652,8 @@ run_member_bootstrap() {
   NEEDS_NODE=false
   for repo in "${REPOS[@]}"; do
     case "$repo" in
-      mc2-operation-api | mc2-accounting-api | mc2-agent-api | mc2-crons | mc2-python | mc2-mailer-api) NEEDS_PYTHON=true ;;
-      mc2-gateway | mc2-account-api | mc2-core) NEEDS_RUST=true ;;
+      mc2-operation-api | mc2-accounting-api | mc2-agent-api | mc2-crons | mc2-python) NEEDS_PYTHON=true ;;
+      mc2-gateway | mc2-account-api | mc2-mailer-api | mc2-core) NEEDS_RUST=true ;;
       mc2-ui | mc2-operation-frontend | mc2-accounting-frontend | mc2-platform-frontend) NEEDS_NODE=true ;;
     esac
   done
@@ -803,7 +802,7 @@ run_member_bootstrap() {
     echo "             Log in -> the ⋯ menu -> 'Use custom coordination server' ->"
     echo "             $MC2_LOGIN_SERVER"
     echo "          2. The app shows a URL ending /register/<id>. Send that id to an"
-    echo "             admin, who runs:  kube --tailnet register <id> <user>"
+    echo "             admin, who runs:  mc2 --tailnet register <id> <user>"
     echo "        Verify with:  tailscale status"
     echo ""
   fi
@@ -909,51 +908,51 @@ run_member_bootstrap() {
   echo ""
 
   # core.hooksPath at one committed directory, so updating a hook is a git pull.
-  if [[ -x "$MC2_DIR/mc2-wrappers/virtualize" ]]; then
-    echo "      Installing git hooks (core.hooksPath -> mc2-wrappers/hooks)"
-    "$MC2_DIR/mc2-wrappers/virtualize" --install-hooks 2>&1 | sed 's/^/      /'
+  if [[ -x "$MC2_DIR/mc2-wrappers/bin/virtualize" ]]; then
     # Both zsh and fish: the login shell on macOS is zsh, but a terminal here may open
     # fish, and a completion missing from the shell in use reads as one that is broken.
-    echo "      Installing tab-completions (zsh and fish)"
-    "$MC2_DIR/mc2-wrappers/virtualize" --install-completions 2>&1 | sed 's/^/      /'
+    echo "      Installing git hooks and tab-completions (zsh and fish)"
+    "$MC2_DIR/mc2-wrappers/bin/virtualize" --install-shell 2>&1 | sed 's/^/      /'
   else
     echo "      ! mc2-wrappers not cloned — no git hooks or completions installed."
-    echo "        After cloning it: virtualize --install-hooks && virtualize --install-completions"
+    echo "        After cloning it: virtualize --install-shell"
   fi
   echo ""
 
   echo "[5/5] Linking CLI tools"
   NEED_LINK=false
-  [[ "$(readlink /usr/local/bin/kube 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/kube" ]] && NEED_LINK=true
-  [[ "$(readlink /usr/local/bin/virtualize 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/virtualize" ]] && NEED_LINK=true
-  [[ "$(readlink /usr/local/bin/flow 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/flow" ]] && NEED_LINK=true
+  [[ "$(readlink /usr/local/bin/kube 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/bin/kube" ]] && NEED_LINK=true
+  [[ "$(readlink /usr/local/bin/virtualize 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/bin/virtualize" ]] && NEED_LINK=true
+  [[ "$(readlink /usr/local/bin/flow 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/bin/flow" ]] && NEED_LINK=true
+  [[ "$(readlink /usr/local/bin/mc2 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/bin/mc2" ]] && NEED_LINK=true
 
   # A custom selection can leave mc2-wrappers unticked; linking anyway dangles.
   if [[ ! -d "$MC2_DIR/mc2-wrappers" ]]; then
     NEED_LINK=false
-    echo "      ! mc2-wrappers was not cloned — skipping. 'kube', 'virtualize' and 'flow' will"
+    echo "      ! mc2-wrappers was not cloned — skipping. 'kube', 'virtualize', 'flow' and 'mc2' will"
     echo "        not exist until you clone it and re-run this script."
   fi
 
   if [[ "$NEED_LINK" == true ]]; then
-    sudo ln -sf "$MC2_DIR/mc2-wrappers/kube" /usr/local/bin/kube
-    sudo ln -sf "$MC2_DIR/mc2-wrappers/virtualize" /usr/local/bin/virtualize
-    sudo ln -sf "$MC2_DIR/mc2-wrappers/flow" /usr/local/bin/flow
-    echo "      ✓ kube, virtualize and flow linked into /usr/local/bin"
+    sudo ln -sf "$MC2_DIR/mc2-wrappers/bin/kube" /usr/local/bin/kube
+    sudo ln -sf "$MC2_DIR/mc2-wrappers/bin/virtualize" /usr/local/bin/virtualize
+    sudo ln -sf "$MC2_DIR/mc2-wrappers/bin/flow" /usr/local/bin/flow
+    sudo ln -sf "$MC2_DIR/mc2-wrappers/bin/mc2" /usr/local/bin/mc2
+    echo "      ✓ kube, virtualize, flow and mc2 linked into /usr/local/bin"
   else
-    echo "      ✓ kube, virtualize and flow already correctly linked"
+    echo "      ✓ kube, virtualize, flow and mc2 already correctly linked"
   fi
   echo ""
 
   # Docker Desktop's ClusterIPs are unreachable from the host, unlike dev and prod where
   # the node advertises the service CIDR. The agent keeps that tunnel up across reboots.
-  if [[ -x "$MC2_DIR/mc2-wrappers/virtualize" ]]; then
+  if [[ -x "$MC2_DIR/mc2-wrappers/bin/virtualize" ]]; then
     if launchctl print "gui/$UID/com.mc2.fwd.local" >/dev/null 2>&1; then
       echo "      ✓ local forwards already running as a launchd agent"
     else
-      "$MC2_DIR/mc2-wrappers/virtualize" --fwd-install >/dev/null 2>&1 \
-        && echo "      ✓ local forwards installed (starts at login; virtualize --fwd-status)" \
-        || echo "      ! could not install the local forward agent — run: virtualize --fwd-install"
+      "$MC2_DIR/mc2-wrappers/bin/virtualize" --fwd install >/dev/null 2>&1 \
+        && echo "      ✓ local forwards installed (starts at login; virtualize --fwd)" \
+        || echo "      ! could not install the local forward agent — run: virtualize --fwd install"
     fi
   fi
   echo ""
@@ -977,7 +976,7 @@ run_member_bootstrap() {
 
   echo "--------------------"
   # Keyed on what was cloned, not the preset: advice that cannot work is worse than none.
-  _virt="$MC2_DIR/mc2-wrappers/virtualize"
+  _virt="$MC2_DIR/mc2-wrappers/bin/virtualize"
   if [[ "$NEEDS_CLUSTER" == false ]]; then
     # Nothing here depends on a cluster, so the rest is done rather than described.
     if [[ -x "$_virt" ]]; then
@@ -1002,11 +1001,12 @@ run_member_bootstrap() {
     echo ""
     echo "  virtualize -p $_example_app --start   # $_example_port"
   else
-    echo "You're set up. Three commands bring the local cluster up — they need Docker"
+    echo "You're set up. These bring the local cluster up — they need Docker"
     echo "Desktop's Kubernetes switched on and the tailnet joined:"
     echo ""
-    echo "  kube --install-traefik   # one-time"
-    echo "  kube --reboot"
+    echo "  mc2 --install            # one-time: Traefik and the secrets operator"
+    echo "  mc2 --secrets"
+    echo "  mc2 --reboot"
     echo "  virtualize --setup       # dependencies, IDE run configs, forwards"
     echo ""
     echo "Then 'virtualize --doctor' should be all green, and a service starts with:"
