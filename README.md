@@ -14,16 +14,39 @@ git clone https://github.com/mc2-development/mc2-bootstrap.git
 cd mc2-bootstrap && ./bootstrap.sh
 ```
 
-Asks what you'll be working on, checks and offers to install the prerequisites that
-answer actually needs, generates an SSH key if you have none and walks you through
-adding it to GitHub, clones the repos into `~/Work/mc2`, symlinks the CLIs.
+Asks what you'll be working on, shows **one list** of every tool that answer needs and
+this Mac lacks, and installs all of it on one yes — through Homebrew, which it installs
+first if missing. Then it generates an SSH key if you have none and walks you through
+adding it to GitHub, clones the repos into `~/Work/mc2`, and symlinks the CLIs. A
+frontend checkout finishes with `virtualize --setup` and `virtualize --doctor` run for
+you; a backend one ends with the three commands that need Docker's Kubernetes on.
 
-| Preset | Clones | Toolchains checked |
+Declining installs nothing and prints the list, rather than leaving a half-built Mac
+that fails its first real command. Re-running is safe: only what is missing is listed.
+
+| Preset | Clones |
+|---|---|
+| Frontend | the three apps + `mc2-ui` |
+| Backend | the APIs, gateway, migrator, both shared libs |
+| Everything | all of the above |
+| Choose myself | whatever you tick — the tools follow what was ticked |
+
+The tools, and why each is on the list:
+
+| Who | Tool | Why |
 |---|---|---|
-| Frontend | the three apps + `mc2-ui` | node, pnpm |
-| Backend | the APIs, gateway, migrator, both shared libs | uv, cargo, Docker, kubectl, helm |
-| Everything | all of the above | all of the above |
-| Choose myself | whatever you tick | derived from what you ticked |
+| everyone | `tailscale-app` (cask) | the dev tier answers only on the tailnet |
+| everyone | `gitleaks`, `shellcheck`, `shfmt`, `yamlfmt` | the git hooks run them, and skip any that is missing — silently |
+| frontend | `node`, `pnpm` | the Nuxt apps; `packageManager` pins pnpm's version. `virtualize -p mc2-ui --install` adds Chromium for its browser tests |
+| Python or Rust | `taplo` | formats `pyproject.toml` and `Cargo.toml` |
+| Python | `uv` | the toolchain; installs the interpreter each repo asks for |
+| Rust | rustup (from rustup.rs), `cargo-deny`, `cargo-machete`, `cargo-watch` | the toolchain each repo pins; the advisory check CI fails on; unused dependencies; hot reload |
+| backend | `docker-desktop` (cask), `kubectl`, `helm`, `yq`, `infisical`, `argo`, `argocd`, `hl` | the local cluster, its settings and credentials, the pipeline, readable logs |
+
+No IDE is installed: `virtualize --setup` writes run configurations for JetBrains and
+VS Code alike, so the choice stays yours. Two steps stay manual because no script can
+take them: switching on Kubernetes in Docker Desktop, and an admin registering this Mac
+on the tailnet (`kube --tailnet register <id> <user>`).
 
 **`tailscale` is checked for every preset, including Frontend.** Every
 `mc2-dev.com` hostname resolves to the server's tailnet address and the provider
@@ -44,7 +67,7 @@ need tailscale, precisely *because* it runs against the deployed tier. `mc2-mail
 `mc2-webhooks` and `mc2-realtime` are shown but unticked — each is an empty repo holding
 only a README that records its boundary, until something pulls on it.
 
-Doesn't touch the cluster. Afterwards (backend/everything):
+Doesn't touch the cluster. Afterwards (backend/everything), with Docker's Kubernetes on:
 
 ```bash
 kube --install-traefik   # one-time
@@ -64,12 +87,13 @@ secret may ever be added to it**; the unattended path takes its credentials from
 environment the hook sets.
 
 ```bash
-MC2_UNATTENDED=1 MC2_SERVER_PASSPHRASE=... MC2_CONFIRM_HOSTNAME=$(hostname) \
-  MC2_TS_AUTHKEY=tskey-... MC2_DISABLE_UFW=1 bash bootstrap.sh --server
+MC2_SERVER_PASSPHRASE=... MC2_CONFIRM_HOSTNAME=$(hostname) MC2_TS_AUTHKEY=... \
+  MC2_TS_LOGIN_SERVER=https://headscale.mc2-dev.com:8443 MC2_DISABLE_UFW=1 \
+  bash bootstrap.sh --server
 ```
 
-Each variable replaces a prompt, and a missing one is a refusal naming the fix rather
-than a default — a guard that defaults is not a guard. `MC2_TS_AUTHKEY` is the one that
+There are no prompts: a missing variable is a refusal naming the fix rather than a
+default — a guard that defaults is not a guard. `MC2_TS_AUTHKEY` is the one that
 matters: without a key `tailscale up` blocks on a browser URL nobody is watching, and
 that single fact is what kept provisioning manual. Terraform mints the key
 preauthorized, single-use and tagged, so the node joins as `tag:server`, its subnet
@@ -79,17 +103,18 @@ out of a box with no inbound firewall rules.
 With no terminal there is nothing to watch, so `/var/log/mc2-bootstrap.log` is the run
 — `tail -f` it from the provider's web console.
 
-The interactive path is unchanged and still the default, for repairing an existing box
-or bringing up a provider Terraform does not cover:
+Repairing an existing box by hand is the same command over ssh, with the same
+variables; `kube --tailnet key server` mints the tailnet key:
 
 ```bash
-scp bootstrap.sh root@<SERVER_IP>:/tmp/
-ssh -t root@<SERVER_IP>            # -t, or the passphrase prompt refuses rather than echo it
-bash /tmp/bootstrap.sh --server
+scp bootstrap.sh root@<TAILNET_IP>:/tmp/
+ssh root@<TAILNET_IP> 'MC2_SERVER_PASSPHRASE=... MC2_CONFIRM_HOSTNAME=$(hostname) \
+  MC2_TS_AUTHKEY=... MC2_TS_LOGIN_SERVER=https://headscale.mc2-dev.com:8443 \
+  MC2_DISABLE_UFW=1 bash /tmp/bootstrap.sh --server'
 ```
 
 Guards either way: refuses non-Linux, refuses non-root, requires the shared passphrase
-(an accident guard, not a security control), and makes you name the hostname.
+(an accident guard, not a security control), and the hostname named in advance.
 
 ### What it does
 
@@ -120,8 +145,9 @@ limits to 8192/524288 in `/etc/sysctl.d`, and caps the journal at 500M. All four
 files rather than flags, so re-running fixes an existing node. Off-server snapshot
 upload needs bucket credentials and is written by `mc2-terraform`, not here.
 
-It offers to disable `ufw`, which filters flannel VXLAN and the pod/service CIDRs and
-breaks networking in ways that look like application bugs.
+It disables `ufw` when `MC2_DISABLE_UFW=1` and refuses otherwise: ufw filters flannel
+VXLAN and the pod/service CIDRs and breaks networking in ways that look like application
+bugs.
 
 ### Afterwards
 

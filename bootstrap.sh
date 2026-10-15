@@ -1,7 +1,7 @@
 #!/bin/bash
 # Prepares a machine: --member sets up a developer Mac, --server installs k3s on a
-# Linux host. Terraform runs the server mode as the provider's post-install hook, so
-# MC2_UNATTENDED exists; see usage(). This repo is PUBLIC — nothing secret goes in it.
+# Linux host. Terraform runs the server mode as the provider's post-install hook, with
+# every answer in the environment; see usage(). This repo is PUBLIC — nothing secret goes in it.
 # No pipefail: ~27 pipelines rely on the first command being allowed to fail.
 set -eu
 
@@ -34,7 +34,8 @@ SERVER_LOG="/var/log/mc2-bootstrap.log"
 # Pinned so a rebuild reproduces THIS cluster, not whatever "stable" means today.
 K3S_VERSION="v1.36.4+k3s1"
 
-UNATTENDED="${MC2_UNATTENDED:-}"
+# Server mode sets it: no spinner, since it animates into the log with \r forever.
+UNATTENDED=""
 
 # Every mc2-dev.com hostname resolves to this tailnet device.
 MC2_TS_HOSTNAME="${MC2_TS_HOSTNAME:-mc2}"
@@ -59,18 +60,16 @@ Options:
   --ip <address>    Server mode: override the auto-detected public IP.
   -h, --help        Show this message.
 
-Server mode, unattended. This is how Terraform runs it as the provider's post-install
-hook; interactively none of it is needed. A value that is missing is a refusal, not a
-default — every one of these replaces a guard, and a guard that defaults is not one.
+Server mode takes every answer from the environment and asks nothing: Terraform runs
+it as the provider's post-install hook, and a repair over ssh passes the same values.
+A value that is missing is a refusal, not a default — a guard that defaults is not one.
+Everything is tee'd to /var/log/mc2-bootstrap.log.
 
-  MC2_UNATTENDED=1            No prompts. No spinner (it animates into the log with
-                              \r forever). Everything tee'd to /var/log/mc2-bootstrap.log.
-  MC2_SERVER_PASSPHRASE=...   The accident guard. Also honoured interactively.
-  MC2_CONFIRM_HOSTNAME=...    Must equal `hostname`, replacing typing it back.
-  MC2_TS_AUTHKEY=tskey-...    Pre-authorized, tagged, single-use. Replaces the browser
-                              auth URL — the one reason this script used to need a human.
-  MC2_DISABLE_UFW=1           Answers the ufw prompt. Unset means leave ufw alone, which
-                              on a k3s node is a decision, so it is stated rather than assumed.
+  MC2_SERVER_PASSPHRASE=...   The accident guard.
+  MC2_CONFIRM_HOSTNAME=...    Must equal `hostname`: names the target in advance.
+  MC2_TS_AUTHKEY=...          Pre-authorized, tagged, single-use (kube --tailnet key server).
+  MC2_TS_LOGIN_SERVER=...     The headscale URL the key belongs to.
+  MC2_DISABLE_UFW=1           Required only when ufw is active: it breaks pod networking.
 EOF
 }
 
@@ -263,14 +262,15 @@ sha256_of() {
 # SERVER MODE
 # ==============================================================================
 run_server_bootstrap() {
+  # Terraform runs this with nobody watching, and a repair over ssh passes the same
+  # variables, so there is no interactive path: a missing value is a refusal.
+  UNATTENDED=1
   banner "Server bootstrap (k3s)"
 
   # Before the guards: a refusal is what someone reads the log for.
-  if [[ -n "$UNATTENDED" ]]; then
-    mkdir -p "$(dirname "$SERVER_LOG")"
-    exec > >(tee -a "$SERVER_LOG") 2>&1
-    echo "=== bootstrap.sh --server (unattended) $(date -u +%FT%TZ) ==="
-  fi
+  mkdir -p "$(dirname "$SERVER_LOG")"
+  exec > >(tee -a "$SERVER_LOG") 2>&1
+  echo "=== bootstrap.sh --server $(date -u +%FT%TZ) ==="
 
   # --- guard 1: platform -------------------------------------------------------
   # Before the passphrase: --server on a Mac deserves better than "wrong passphrase".
@@ -286,25 +286,11 @@ run_server_bootstrap() {
   fi
 
   # --- guard 2: passphrase -----------------------------------------------------
-  local supplied
-  if [[ -n "${MC2_SERVER_PASSPHRASE:-}" ]]; then
-    supplied="$MC2_SERVER_PASSPHRASE"
-  elif [[ -n "$UNATTENDED" ]]; then
-    echo "Refusing: MC2_UNATTENDED is set but MC2_SERVER_PASSPHRASE is not."
-    echo "  Unattended, every prompt must be answered by a value. Pass it, or drop"
-    echo "  MC2_UNATTENDED and run this from a terminal."
+  local supplied="${MC2_SERVER_PASSPHRASE:-}"
+  if [[ -z "$supplied" ]]; then
+    echo "Refusing: MC2_SERVER_PASSPHRASE is not set. Terraform passes it; by hand, so does"
+    echo "  the ssh command — see usage (--help)."
     exit 1
-  else
-    # `read -s` cannot disable echo without a terminal, so the passphrase would be clear.
-    if [[ ! -t 0 ]]; then
-      echo "Refusing: no terminal attached, so the passphrase would be echoed in clear."
-      echo ""
-      echo "  Re-run with a TTY:   ssh -t root@<ip> 'bash /tmp/bootstrap.sh --server'"
-      echo "  Or non-interactively: ssh root@<ip> 'MC2_SERVER_PASSPHRASE=... bash /tmp/bootstrap.sh --server'"
-      exit 1
-    fi
-    read -rsp "Server passphrase: " supplied
-    echo ""
   fi
 
   if [[ "$(sha256_of "$supplied")" != "$SERVER_PASSPHRASE_SHA256" ]]; then
@@ -339,19 +325,14 @@ run_server_bootstrap() {
   echo ""
   echo "This installs a Kubernetes control plane and its bundled Traefik."
 
-  # Unattended still names the machine, just in advance; Terraform fills it in.
-  local typed
-  if [[ -n "$UNATTENDED" ]]; then
-    typed="${MC2_CONFIRM_HOSTNAME:-}"
-    if [[ -z "$typed" ]]; then
-      echo "Refusing: MC2_UNATTENDED is set but MC2_CONFIRM_HOSTNAME is not."
-      echo "  Set it to this machine's hostname ('$hostname_here') to confirm the target."
-      exit 1
-    fi
-    echo "      confirmed by MC2_CONFIRM_HOSTNAME=$typed"
-  else
-    read -rp "Type the hostname to confirm: " typed
+  # The machine is named in advance; Terraform fills it in.
+  local typed="${MC2_CONFIRM_HOSTNAME:-}"
+  if [[ -z "$typed" ]]; then
+    echo "Refusing: MC2_CONFIRM_HOSTNAME is not set."
+    echo "  Set it to this machine's hostname ('$hostname_here') to confirm the target."
+    exit 1
   fi
+  echo "      confirmed by MC2_CONFIRM_HOSTNAME=$typed"
   if [[ "$typed" != "$hostname_here" ]]; then
     echo "Refusing: '$typed' does not match '$hostname_here'."
     exit 1
@@ -433,23 +414,11 @@ run_server_bootstrap() {
       echo "      ✓ tailscale up as '$MC2_TS_HOSTNAME', advertising $K3S_SERVICE_CIDR"
       echo "        The route is approved by the tailnet policy (autoApprovers for"
       echo "        tag:server), which mc2-k8s/tools/headscale owns. Nothing to click."
-    elif [[ -n "$UNATTENDED" ]]; then
-      echo "Refusing: MC2_UNATTENDED is set but MC2_TS_AUTHKEY is not."
-      echo "  Without a key 'tailscale up' blocks on a browser URL nobody is watching,"
-      echo "  and the run would hang until the provider's hook timed out."
-      exit 1
     else
-      echo "      Bringing tailscale up and advertising the cluster service CIDR."
-      echo "      A URL follows — open it, then register the node on the headscale host:"
-      echo "        headscale auth register --user <you> --auth-id <id from the URL>"
-      echo ""
-      tailscale up "${_ts_login[@]}" --hostname="$MC2_TS_HOSTNAME" --advertise-routes="$K3S_SERVICE_CIDR" --accept-dns=false
-      echo ""
-      echo "      ✓ tailscale up as '$MC2_TS_HOSTNAME', advertising $K3S_SERVICE_CIDR"
-      echo "      ! The route is NOT live until it is approved — by the tailnet policy"
-      echo "        if tag:server auto-approves it, otherwise on the headscale host:"
-      echo "        headscale nodes approve-routes --identifier <id> --routes $K3S_SERVICE_CIDR"
-      echo "        Until then a laptop can reach this host but not the ClusterIPs behind it."
+      echo "Refusing: MC2_TS_AUTHKEY is not set."
+      echo "  Without a key 'tailscale up' blocks on a browser URL nobody is watching."
+      echo "  Terraform mints one; by hand: kube --tailnet key server"
+      exit 1
     fi
   fi
 
@@ -468,26 +437,14 @@ run_server_bootstrap() {
     echo "        Recommended: disable ufw and firewall at the PROVIDER layer, in"
     echo "        front of the host (rules printed at the end of this script)."
     echo ""
-    local ufw_ans
-    if [[ -n "$UNATTENDED" ]]; then
-      if [[ -z "${MC2_DISABLE_UFW:-}" ]]; then
-        echo "Refusing: ufw is active, MC2_UNATTENDED is set and MC2_DISABLE_UFW is not."
-        echo "  Leaving ufw on breaks pod networking and CoreDNS in ways that look like"
-        echo "  application bugs, so this is not something to decide by defaulting."
-        exit 1
-      fi
-      ufw_ans=y
-      echo "      answered by MC2_DISABLE_UFW"
-    else
-      read -rp "      Disable ufw now? [y/N] " ufw_ans
+    if [[ -z "${MC2_DISABLE_UFW:-}" ]]; then
+      echo "Refusing: ufw is active and MC2_DISABLE_UFW is not set."
+      echo "  Leaving ufw on breaks pod networking and CoreDNS in ways that look like"
+      echo "  application bugs, so this is not something to decide by defaulting."
+      exit 1
     fi
-    if [[ "$ufw_ans" =~ ^[Yy]$ ]]; then
-      ufw --force disable
-      echo "      ✓ ufw disabled"
-    else
-      echo "      Leaving ufw on. Add the CIDR rules yourself before trusting the cluster:"
-      echo "        ufw allow from 10.42.0.0/16 && ufw allow from 10.43.0.0/16"
-    fi
+    ufw --force disable
+    echo "      ✓ ufw disabled (MC2_DISABLE_UFW)"
   else
     echo "      ✓ ufw not active"
   fi
@@ -627,24 +584,10 @@ run_server_bootstrap() {
   echo "     scp root@${kube_addr}:${KUBECONFIG_OUT} ~/.kube/${KUBE_CONTEXT_NAME}.yaml"
   echo "     export KUBECONFIG=~/.kube/${KUBE_CONTEXT_NAME}.yaml && kubectl get nodes"
   echo ""
-  echo "2. Close the provider firewall: NO inbound rules, and ATTACHED — an"
-  echo "   unattached firewall filters nothing. Nothing needs to be open. ssh, the"
-  echo "   Kubernetes API and https all ride the tailscale tunnel, which is"
-  echo "   outbound-only, and certificates come from dns01, so not even :80 is"
-  echo "   needed. Postgres stays a ClusterIP, reached over the subnet route."
+  echo "2. The provider firewall stays a console step — mc2-terraform/README.md says why"
+  echo "   and how to verify it without locking yourself out."
   echo ""
-  echo "   Verify BOTH, in this order — closing it before the tunnel is proven"
-  echo "   locks you out of a box with no other way in:"
-  echo "     kubectl get nodes                                  # over the tailnet"
-  echo "     for p in 22 80 443 6443; do nc -z -G4 ${public_ip} \$p; done   # all fail"
-  echo ""
-  echo "3. The subnet route ($K3S_SERVICE_CIDR) is approved by the tailnet policy in"
-  echo "   mc2-terraform/server, not by hand. Without it a laptop reaches this host"
-  echo "   but not the pinned ClusterIPs every dev connection string dials, and a"
-  echo "   connection hangs rather than refuses. Check:"
-  echo "     tailscale status --json | jq '.Self.PrimaryRoutes'"
-  echo ""
-  echo "4. Bring the platform up from mc2-k8s — see docs/05-production-server.md."
+  echo "3. Bring the platform up from mc2-k8s — see docs/05-production-server.md."
   echo "   The order there is a dependency chain, not a preference, and secrets now"
   echo "   come from Infisical rather than a laptop."
 }
@@ -722,220 +665,189 @@ run_member_bootstrap() {
   NEEDS_CLUSTER=false
   [[ "$NEEDS_PYTHON" == true || "$NEEDS_RUST" == true ]] && NEEDS_CLUSTER=true
 
-  echo "[2/5] Checking prerequisites"
+  echo "[2/5] Installing the tools"
 
   if ! command -v brew >/dev/null 2>&1; then
-    read -rp "      Homebrew isn't installed (needed for the tools below). Install it now? [y/N] " ans
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-      if [[ -x /opt/homebrew/bin/brew ]]; then
-        eval "$(/opt/homebrew/bin/brew shellenv)"
-      elif [[ -x /usr/local/bin/brew ]]; then
-        eval "$(/usr/local/bin/brew shellenv)"
-      fi
+    read -rp "      Homebrew isn't installed, and every tool below comes through it. Install it now? [Y/n] " ans
+    if [[ "$ans" =~ ^[Nn]$ ]]; then
+      echo "      Nothing can be installed without it: https://brew.sh, then re-run this script."
+      exit 1
+    fi
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+      eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -x /usr/local/bin/brew ]]; then
+      eval "$(/usr/local/bin/brew shellenv)"
     fi
     echo ""
   fi
 
-  # Offers, never silent installs. Declining returns 0, or `set -e` reads it as failure.
-  tool_offer() {
-    local tool="$1" cmd="$2" why="$3"
-    command -v "$tool" >/dev/null 2>&1 && return 0
-    read -rp "      $tool isn't installed ($why). Install it now? [y/N] " ans
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-      run_with_spinner "$cmd" sh -c "$cmd"
-    fi
-    return 0
+  # A GUI app installed by hand puts no command on PATH until it is opened once, and a
+  # cask over an existing app fails the whole bundle.
+  present() {
+    case "$1" in
+      tailscale) command -v tailscale >/dev/null 2>&1 || [[ -d /Applications/Tailscale.app ]] ;;
+      docker) command -v docker >/dev/null 2>&1 || [[ -d /Applications/Docker.app ]] ;;
+      *) command -v "$1" >/dev/null 2>&1 ;;
+    esac
   }
 
-  brew_offer() {
-    local tool="$1" formula="$2" why="$3"
-    command -v "$tool" >/dev/null 2>&1 && return 0
-    command -v brew >/dev/null 2>&1 || return 0
-    read -rp "      $tool isn't installed ($why). Install it now via Homebrew? [y/N] " ans
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-      run_with_spinner "brew install $formula" brew install "$formula"
-    fi
-    return 0
+  # One list for the role, installed on one answer: a tool declined on its own left a Mac
+  # that failed its first real command, with nothing saying which tool was missing.
+  WANT_NAMES=()
+  WANT_WHY=()
+  BREWFILE=""
+  want() { # command  brewfile-line  why
+    present "$1" && return 0
+    WANT_NAMES+=("$1")
+    WANT_WHY+=("$3")
+    BREWFILE+="$2"$'\n'
   }
 
-  # Every preset: a machine off the tailnet cannot reach dev at all. A cask, not a
-  # formula — the formula installs a daemon that fights the GUI app.
-  if ! command -v tailscale >/dev/null 2>&1 && [[ ! -d /Applications/Tailscale.app ]]; then
-    if command -v brew >/dev/null 2>&1; then
-      read -rp "      tailscale isn't installed (the only route to the dev tier). Install it now? [y/N] " ans
-      if [[ "$ans" =~ ^[Yy]$ ]]; then
-        run_with_spinner "brew install --cask tailscale" brew install --cask tailscale
-      fi
-    else
-      echo "      ! tailscale isn't installed and Homebrew is missing."
-      echo "        Install from https://tailscale.com/download/mac — without it the"
-      echo "        dev tier is unreachable, and the failure looks like DNS."
-    fi
-  else
-    echo "      ✓ tailscale present"
+  want tailscale 'cask "tailscale-app"' "the dev tier answers only on the tailnet"
+  want gitleaks 'brew "gitleaks"' "pre-commit: refuses a commit that stages a credential"
+  want shellcheck 'brew "shellcheck"' "pre-push: lints the shell scripts"
+  want shfmt 'brew "shfmt"' "pre-commit: formats the shell scripts"
+  want yamlfmt 'brew "yamlfmt"' "pre-commit: formats YAML"
+  if [[ "$NEEDS_NODE" == true ]]; then
+    want node 'brew "node"' "runs the Nuxt apps"
+    # packageManager in each package.json pins the version; pnpm switches to it itself.
+    want pnpm 'brew "pnpm"' "installs and runs every JS repo"
   fi
-
-  # Installed is not joined, and the difference is invisible until a request times out.
-  # The client is tailscale's; the control plane is not, so there is no tailscale.com
-  # account to sign into — the app has to be pointed at ours first.
-  if command -v tailscale >/dev/null 2>&1 && ! tailscale status >/dev/null 2>&1; then
-    echo "      ! tailscale is installed but not joined."
-    echo "        This tailnet is coordinated by headscale, so sign-in is two steps:"
-    echo "          1. Tailscale -> account icon -> Log in -> the ⋯ menu ->"
-    echo "             'Use custom coordination server' -> $MC2_LOGIN_SERVER"
-    echo "          2. The app shows a URL ending /register/<id>. Send that id to an"
-    echo "             admin, who runs:  headscale auth register --user <you> --auth-id <id>"
-    echo "        Verify with:  tailscale status"
-  fi
-
-  # Without the binary the pre-commit hook skips itself: a scanner in name only.
-  brew_offer gitleaks gitleaks "blocks a commit that stages a credential"
-
-  # The hooks gate on `command -v`, so without these they quietly do nothing.
-  brew_offer shellcheck shellcheck "lints the shell scripts before a push"
-  brew_offer shfmt shfmt "formats the shell scripts (pre-commit rewrites and re-stages)"
-  brew_offer yamlfmt yamlfmt "formats YAML — k8s manifests, workflows, config templates"
-
-  # terraform and tflint used to be offered here. mc2-terraform is in no preset and in
-  # no menu, so this script never clones it and nobody it sets up could run them.
   if [[ "$NEEDS_TOML" == true ]]; then
-    brew_offer taplo taplo "formats TOML — Cargo.toml and pyproject.toml"
+    want taplo 'brew "taplo"' "pre-commit: formats Cargo.toml and pyproject.toml"
   fi
-
-  if [[ "$NEEDS_CLUSTER" == true ]]; then
-    brew_offer kubectl kubectl "talks to the cluster"
-    # Every backend service logs JSON for Loki, which is unreadable in a terminal.
-    # `kube --logs` and `virtualize --start` pipe through it, and fall back to raw
-    # JSON when it is absent, so declining costs readability and nothing else.
-    brew_offer hl hl "renders the services' JSON logs readably"
-    brew_offer helm helm "installs Traefik locally"
-    # Both read the server kubeconfig; argocd additionally wants one `argocd login`.
-    brew_offer argo argo "reads the build pipeline (argo workflows)"
-    brew_offer argocd argocd "reads what is deployed (argo cd)"
-    # Its own tap: `brew install infisical` finds an unrelated formula.
-    brew_offer infisical infisical/get-cli/infisical "injects each service's configuration at run time"
-
-    # This exits 0 either way, so the check reads the output. One login per machine;
-    # the domain is remembered in the profile.
-    if command -v infisical >/dev/null 2>&1 \
-      && infisical profile list 2>&1 | grep -q 'No login profiles found'; then
-      read -rp "      infisical isn't logged in. Sign in now (opens a browser)? [y/N] " ans
-      if [[ "$ans" =~ ^[Yy]$ ]]; then
-        infisical login --domain https://infisical.mc2-dev.com || true
-      else
-        echo "        Later:  infisical login --domain https://infisical.mc2-dev.com"
-        echo "        Until then no service can start — its configuration lives there."
-      fi
-    fi
-  fi
-
-  # virtualize --setup shells out to these and would fail partway, after writing configs.
   if [[ "$NEEDS_PYTHON" == true ]]; then
-    brew_offer uv uv "Python toolchain — replaces pip and venv"
+    want uv 'brew "uv"' "the Python toolchain; installs the interpreter each repo asks for"
   fi
   if [[ "$NEEDS_RUST" == true ]]; then
-    # Nothing else warns about a declared dependency nothing uses. No formula exists.
-    tool_offer cargo-machete "cargo install cargo-machete" \
-      "reports a dependency declared in Cargo.toml and never used"
+    want cargo-deny 'brew "cargo-deny"' "pre-push: the advisory and licence check CI fails on"
+    want cargo-watch 'brew "cargo-watch"' "hot reload for the Rust services"
   fi
-  if [[ "$NEEDS_NODE" == true ]]; then
-    brew_offer node node "runs the Nuxt apps"
-    # The major does not matter: packageManager pins it and pnpm self-manages down.
-    brew_offer pnpm pnpm "package manager for every JS repo"
+  if [[ "$NEEDS_CLUSTER" == true ]]; then
+    want docker 'cask "docker-desktop"' "runs the local cluster"
+    want kubectl 'brew "kubectl"' "talks to the cluster"
+    want helm 'brew "helm"' "installs Traefik locally"
+    want yq 'brew "yq"' "renders each service's settings from mc2-k8s"
+    # Its own tap: `brew install infisical` finds an unrelated formula.
+    want infisical $'tap "infisical/get-cli"\nbrew "infisical/get-cli/infisical"' "hands each service its credentials at start"
+    want argo 'brew "argo"' "reads the build pipeline"
+    want argocd 'brew "argocd"' "reads what is deployed"
+    want hl 'brew "hl"' "renders the services' JSON logs readably"
   fi
+  # Neither has a formula: the rustup formula is keg-only and ships no rustup-init.
+  NEEDS_RUSTUP=false
   if [[ "$NEEDS_RUST" == true ]] && ! command -v cargo >/dev/null 2>&1; then
-    # Not `brew install rustup`: that formula is keg-only and installs no toolchain, so
-    # cargo still would not exist afterwards.
-    read -rp "      cargo isn't installed (builds the Rust services). Install rustup now? [y/N] " ans
-    if [[ "$ans" =~ ^[Yy]$ ]]; then
-      run_with_spinner "rustup (installs the stable toolchain)" \
+    NEEDS_RUSTUP=true
+    WANT_NAMES+=(rust)
+    WANT_WHY+=("the Rust toolchain, from rustup.rs; each repo pins its version")
+  fi
+  NEEDS_MACHETE=false
+  if [[ "$NEEDS_RUST" == true ]] && ! command -v cargo-machete >/dev/null 2>&1; then
+    NEEDS_MACHETE=true
+    WANT_NAMES+=(cargo-machete)
+    WANT_WHY+=("pre-push: a dependency declared and never used")
+  fi
+
+  if [[ ${#WANT_NAMES[@]} -eq 0 ]]; then
+    echo "      ✓ every tool for $ROLE is already here"
+  else
+    echo "      This machine needs:"
+    echo ""
+    for i in "${!WANT_NAMES[@]}"; do
+      printf '        %-14s %s\n' "${WANT_NAMES[i]}" "${WANT_WHY[i]}"
+    done
+    echo ""
+    read -rp "      Install all of it now? [Y/n] " ans
+    if [[ "$ans" =~ ^[Nn]$ ]]; then
+      echo ""
+      echo "      Nothing installed. This is the list, for doing it by hand:"
+      echo ""
+      printf '%s' "$BREWFILE" | sed 's/^/        /'
+      [[ "$NEEDS_RUSTUP" == true ]] && echo "        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+      [[ "$NEEDS_MACHETE" == true ]] && echo "        cargo install cargo-machete"
+      exit 1
+    fi
+    echo ""
+    # Not under the spinner: the casks ask for the macOS password, and a hidden prompt hangs.
+    if [[ -n "$BREWFILE" ]]; then
+      _brewfile="$(mktemp)"
+      printf '%s' "$BREWFILE" >"$_brewfile"
+      brew bundle install --file="$_brewfile"
+      rm -f "$_brewfile"
+    fi
+    if [[ "$NEEDS_RUSTUP" == true ]]; then
+      run_with_spinner "rustup (the stable toolchain)" \
         bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
-      # PATH for the rest of this script; rustup-init handles later sessions.
-      if [[ -f "$HOME/.cargo/env" ]]; then
-        # shellcheck source=/dev/null
-        source "$HOME/.cargo/env"
-      fi
+    fi
+    # PATH for the rest of this script; rustup wrote it into the shell profile for later.
+    if [[ -f "$HOME/.cargo/env" ]]; then
+      # shellcheck source=/dev/null
+      source "$HOME/.cargo/env"
+    fi
+    if [[ "$NEEDS_MACHETE" == true ]]; then
+      run_with_spinner "cargo install cargo-machete" cargo install --locked cargo-machete
     fi
   fi
   echo ""
 
-  MISSING=()
-  FOUND=(git Homebrew tailscale gitleaks)
-  command -v git >/dev/null 2>&1 || MISSING+=("git
-        Run: xcode-select --install")
-  # Unconditional: it gates every preset, since dev resolves only on the tailnet.
-  if ! command -v gitleaks >/dev/null 2>&1; then
-    MISSING+=("gitleaks
-        Run: brew install gitleaks
-        The pre-commit hook installed in every repo skips itself without it. Real
-        credentials have already reached this org's git history once.")
-  fi
-  if ! command -v tailscale >/dev/null 2>&1 && [[ ! -d /Applications/Tailscale.app ]]; then
-    MISSING+=("tailscale
-        Run: brew install --cask tailscale
-        Then open it, sign in, and have an admin add this machine to the tailnet.
-        Every mc2-dev.com host resolves to a tailnet address — without this the
-        dev tier is unreachable and the symptom looks like broken DNS.")
-  fi
-  command -v brew >/dev/null 2>&1 || MISSING+=("Homebrew
-        Needed for the tools above. Install: https://brew.sh")
-
-  if [[ "$NEEDS_CLUSTER" == true ]]; then
-    FOUND+=(Docker kubectl helm argo argocd infisical)
-    command -v docker >/dev/null 2>&1 || MISSING+=("Docker Desktop
-        1. Download and install: https://www.docker.com/products/docker-desktop/
-        2. Open it once (finishes first-time setup)
-        3. Enable Kubernetes: Docker Desktop -> Settings -> Kubernetes -> Enable Kubernetes")
-    command -v kubectl >/dev/null 2>&1 || MISSING+=("kubectl
-        Run: brew install kubectl")
-    command -v helm >/dev/null 2>&1 || MISSING+=("helm
-        Run: brew install helm")
-    command -v argo >/dev/null 2>&1 || MISSING+=("argo
-        Run: brew install argo")
-    command -v argocd >/dev/null 2>&1 || MISSING+=("argocd
-        Run: brew install argocd")
-    command -v infisical >/dev/null 2>&1 || MISSING+=("infisical
-        Run: brew install infisical/get-cli/infisical
-        Services read their configuration from it at startup — there is no .env to
-        fall back on, so without this nothing starts.")
-  fi
-
-  if [[ "$NEEDS_TOML" == true ]]; then
-    FOUND+=(taplo)
-    command -v taplo >/dev/null 2>&1 || MISSING+=("taplo
-        Run: brew install taplo")
-  fi
-  if [[ "$NEEDS_PYTHON" == true ]]; then
-    FOUND+=(uv)
-    command -v uv >/dev/null 2>&1 || MISSING+=("uv
-        Run: brew install uv")
-  fi
-  if [[ "$NEEDS_NODE" == true ]]; then
-    FOUND+=(node pnpm)
-    command -v node >/dev/null 2>&1 || MISSING+=("node
-        Run: brew install node")
-    command -v pnpm >/dev/null 2>&1 || MISSING+=("pnpm
-        Run: brew install pnpm")
-  fi
-  if [[ "$NEEDS_RUST" == true ]]; then
-    FOUND+=(cargo)
-    command -v cargo >/dev/null 2>&1 || MISSING+=("cargo
-        Run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh")
-  fi
-
-  if [[ ${#MISSING[@]} -gt 0 ]]; then
-    echo "      Missing:"
-    for m in "${MISSING[@]}"; do echo "      - $m"; done
+  # Installed is not joined, and the difference is invisible until a request times out.
+  # The client is tailscale's; the control plane is not, so there is no tailscale.com
+  # account to sign into — the app has to be pointed at ours first.
+  TAILNET_UP=false
+  if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
+    TAILNET_UP=true
+  else
+    echo "      ! tailscale is not joined yet. This tailnet is coordinated by headscale:"
+    echo "          1. Open Tailscale (approve its system extension if macOS asks) ->"
+    echo "             Log in -> the ⋯ menu -> 'Use custom coordination server' ->"
+    echo "             $MC2_LOGIN_SERVER"
+    echo "          2. The app shows a URL ending /register/<id>. Send that id to an"
+    echo "             admin, who runs:  kube --tailnet register <id> <user>"
+    echo "        Verify with:  tailscale status"
     echo ""
-    echo "      Install these first, then re-run this script."
+  fi
+
+  # Exits 0 either way, so the check reads the output. One login per machine; the domain
+  # is remembered in the profile. Infisical answers only on the tailnet.
+  if [[ "$NEEDS_CLUSTER" == true ]] && command -v infisical >/dev/null 2>&1 \
+    && infisical profile list 2>&1 | grep -q 'No login profiles found'; then
+    if [[ "$TAILNET_UP" == true ]]; then
+      read -rp "      infisical isn't logged in. Sign in now (opens a browser)? [Y/n] " ans
+      if [[ ! "$ans" =~ ^[Nn]$ ]]; then
+        infisical login --domain https://infisical.mc2-dev.com || true
+      fi
+    fi
+    if infisical profile list 2>&1 | grep -q 'No login profiles found'; then
+      echo "      ! Not logged in to Infisical, which answers only on the tailnet. Once joined:"
+      echo "          infisical login --domain https://infisical.mc2-dev.com"
+      echo "        Until then no backend service can start: its credentials live there."
+      echo ""
+    fi
+  fi
+
+  # The pass that proves the install worked: a bundle that failed partway still exits here
+  # with the exact command for whatever did not land.
+  MISSING=()
+  command -v git >/dev/null 2>&1 || MISSING+=("git — xcode-select --install")
+  for i in "${!WANT_NAMES[@]}"; do
+    case "${WANT_NAMES[i]}" in
+      rust) command -v cargo >/dev/null 2>&1 || MISSING+=("cargo — curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh") ;;
+      *) present "${WANT_NAMES[i]}" || MISSING+=("${WANT_NAMES[i]} — see the brew output above") ;;
+    esac
+  done
+  if [[ ${#MISSING[@]} -gt 0 ]]; then
+    echo "      Still missing:"
+    for m in "${MISSING[@]}"; do echo "        - $m"; done
+    echo ""
+    echo "      Fix these, then re-run this script; it picks up where it stopped."
     exit 1
   fi
-  echo "      ✓ ${FOUND[*]} all found"
+  echo "      ✓ every tool for $ROLE is installed"
 
   if [[ "$NEEDS_CLUSTER" == true ]] && ! kubectl config get-contexts docker-desktop >/dev/null 2>&1; then
-    echo "      ! Docker Desktop's Kubernetes doesn't look enabled yet"
-    echo "        Docker Desktop -> Settings -> Kubernetes -> Enable Kubernetes"
+    echo "      ! Docker Desktop's Kubernetes isn't on yet — the one step no script can take:"
+    echo "        open Docker Desktop -> Settings -> Kubernetes -> Enable Kubernetes"
   fi
   echo ""
 
@@ -1065,9 +977,13 @@ run_member_bootstrap() {
 
   echo "--------------------"
   # Keyed on what was cloned, not the preset: advice that cannot work is worse than none.
+  _virt="$MC2_DIR/mc2-wrappers/virtualize"
   if [[ "$NEEDS_CLUSTER" == false ]]; then
-    # Name a project that was actually cloned; an example pointing at a missing
-    # directory is noise.
+    # Nothing here depends on a cluster, so the rest is done rather than described.
+    if [[ -x "$_virt" ]]; then
+      "$_virt" --setup
+      "$_virt" --doctor || true
+    fi
     _example_app="mc2-platform-frontend"
     _example_port=":3001"
     for _candidate in mc2-platform-frontend mc2-operation-frontend mc2-accounting-frontend mc2-ui; do
@@ -1082,36 +998,24 @@ run_member_bootstrap() {
         break
       fi
     done
-    echo "You're set up. Two commands and you're running:"
+    echo "You're set up. Start an app against the deployed dev tier:"
     echo ""
-    echo "  cd $MC2_DIR"
-    echo "  virtualize --setup -e dev                       # installs deps, points projects at dev"
     echo "  virtualize -p $_example_app --start   # $_example_port"
-    echo ""
-    echo "Nothing is written to this machine: a service reads its settings from"
-    echo "mc2-k8s/overlays/<tier> and its credentials from Infisical, straight into the"
-    echo "process. If --start says you are not logged in:"
-    echo "  infisical login --domain https://infisical.mc2-dev.com"
-    echo ""
-    echo "Reaching *-dev.mc2-dev.com needs the tailnet — point Tailscale at"
-    echo "$MC2_LOGIN_SERVER and ask an admin to register this machine."
-    echo "Move one app to another tier with 'virtualize -p <project> --switch-dev' (or"
-    echo "--switch-local / --switch-prod); 'virtualize --tiers' shows where each one points."
   else
-    echo "You're set up. A few manual steps left to bring the cluster up:"
+    echo "You're set up. Three commands bring the local cluster up — they need Docker"
+    echo "Desktop's Kubernetes switched on and the tailnet joined:"
     echo ""
-    echo "  cd $MC2_DIR"
     echo "  kube --install-traefik   # one-time"
     echo "  kube --reboot"
-    echo "  virtualize --setup       # venvs, IDE configs, forwards"
+    echo "  virtualize --setup       # dependencies, IDE run configs, forwards"
     echo ""
-    echo "Nothing is copied to this machine. A service reads its settings from"
-    echo "mc2-k8s/overlays/<tier> and its credentials from Infisical, both straight into"
-    echo "the process:"
+    echo "Then 'virtualize --doctor' should be all green, and a service starts with:"
     echo ""
-    echo "  virtualize -p mc2-gateway --switch-dev"
-    echo "  virtualize -p mc2-gateway --start      # or --ide, so the IDE inherits them"
+    echo "  virtualize -p mc2-gateway --start      # or --ide, so the IDE inherits its configuration"
   fi
+  echo ""
+  echo "Open a project in the IDE you prefer: --setup writes run configurations for"
+  echo "JetBrains and VS Code alike."
 }
 
 case "$MODE" in
