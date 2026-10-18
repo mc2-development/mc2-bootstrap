@@ -1,0 +1,22 @@
+name: Format
+
+# The steps live in mc2-development/mc2-actions; this file says what is checked here.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  format:
+    uses: mc2-development/mc2-actions/.github/workflows/format.yml@main
+    permissions:
+      contents: read
+    with:
+      shell: bootstrap.sh

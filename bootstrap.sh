@@ -12,7 +12,7 @@ GITHUB_OWNER="${GITHUB_OWNER:-mc2-development}"
 
 WORK_DIR="$HOME/Work"
 MC2_DIR="$WORK_DIR/mc2"
-REPOS=(mc2-wrappers mc2-k8s mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-webhooks mc2-realtime mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
+REPOS=(mc2-wrappers mc2-k8s mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-platform-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-webhooks mc2-realtime mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
 
 # The default name, so ssh finds it with no ~/.ssh/config. Overridable, because a Mac
 # with a work and a personal GitHub account has one key each and the default name is
@@ -618,7 +618,7 @@ run_member_bootstrap() {
   BASE_REPOS=(mc2-wrappers mc2-k8s)
   FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
   # mc2-rust is not optional, the Rust services declare it as a path dependency.
-  BACKEND_REPOS=(mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-mailer-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
+  BACKEND_REPOS=(mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-platform-api mc2-mailer-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
 
   ROLE="everything"
   case "$_role" in
@@ -653,14 +653,15 @@ run_member_bootstrap() {
   for repo in "${REPOS[@]}"; do
     case "$repo" in
       mc2-operation-api | mc2-accounting-api | mc2-agent-api | mc2-crons | mc2-python) NEEDS_PYTHON=true ;;
-      mc2-gateway | mc2-account-api | mc2-mailer-api | mc2-core) NEEDS_RUST=true ;;
+      mc2-gateway | mc2-account-api | mc2-platform-api | mc2-mailer-api | mc2-core) NEEDS_RUST=true ;;
       mc2-ui | mc2-operation-frontend | mc2-accounting-frontend | mc2-platform-frontend) NEEDS_NODE=true ;;
     esac
   done
   # Cargo.toml and pyproject.toml only; a frontend checkout has no TOML at all.
   NEEDS_TOML=false
   [[ "$NEEDS_PYTHON" == true || "$NEEDS_RUST" == true ]] && NEEDS_TOML=true
-  # Only a backend checkout runs a local cluster; the frontend points at deployed dev.
+  # Only a backend checkout runs a local cluster. A frontend-only Mac runs against the
+  # deployed dev, and needs kubectl and yq only to read that tier's settings from mc2-k8s.
   NEEDS_CLUSTER=false
   [[ "$NEEDS_PYTHON" == true || "$NEEDS_RUST" == true ]] && NEEDS_CLUSTER=true
 
@@ -687,6 +688,8 @@ run_member_bootstrap() {
     case "$1" in
       tailscale) command -v tailscale >/dev/null 2>&1 || [[ -d /Applications/Tailscale.app ]] ;;
       docker) command -v docker >/dev/null 2>&1 || [[ -d /Applications/Docker.app ]] ;;
+      # The formula ships no `nss` command; certutil is what mkcert uses from it.
+      nss) command -v certutil >/dev/null 2>&1 ;;
       *) command -v "$1" >/dev/null 2>&1 ;;
     esac
   }
@@ -712,6 +715,13 @@ run_member_bootstrap() {
     want node 'brew "node"' "runs the Nuxt apps"
     # packageManager in each package.json pins the version; pnpm switches to it itself.
     want pnpm 'brew "pnpm"' "installs and runs every JS repo"
+    want mkcert 'brew "mkcert"' "a trusted certificate for a frontend on the dev tier"
+    want nss 'brew "nss"' "lets Firefox trust that certificate"
+    # The cluster block below adds both for a backend checkout; listed once either way.
+    if [[ "$NEEDS_CLUSTER" != true ]]; then
+      want kubectl 'brew "kubectl"' "reads a frontend's tier settings from mc2-k8s"
+      want yq 'brew "yq"' "reads a frontend's tier settings from mc2-k8s"
+    fi
   fi
   if [[ "$NEEDS_TOML" == true ]]; then
     want taplo 'brew "taplo"' "pre-commit: formats Cargo.toml and pyproject.toml"
@@ -721,7 +731,7 @@ run_member_bootstrap() {
   fi
   if [[ "$NEEDS_RUST" == true ]]; then
     want cargo-deny 'brew "cargo-deny"' "pre-push: the advisory and licence check CI fails on"
-    want cargo-watch 'brew "cargo-watch"' "hot reload for the Rust services"
+    want watchexec 'brew "watchexec"' "hot reload for the Rust services"
   fi
   if [[ "$NEEDS_CLUSTER" == true ]]; then
     want docker 'cask "docker-desktop"' "runs the local cluster"
@@ -898,6 +908,16 @@ run_member_bootstrap() {
   echo ""
 
   echo "[4/5] Cloning into $MC2_DIR"
+  # Finder writes .DS_Store into every folder it opens. Ignored once per machine, in the
+  # file git reads by default (or the one core.excludesFile names), so no repo carries
+  # the entry and no commit ever picks one up.
+  GIT_IGNORE="$(git config --global --get core.excludesFile || echo "$HOME/.config/git/ignore")"
+  GIT_IGNORE="${GIT_IGNORE/#\~/$HOME}"
+  if ! grep -qx '.DS_Store' "$GIT_IGNORE" 2>/dev/null; then
+    mkdir -p "$(dirname "$GIT_IGNORE")"
+    echo '.DS_Store' >>"$GIT_IGNORE"
+    echo "      ✓ .DS_Store ignored machine-wide ($GIT_IGNORE)"
+  fi
   mkdir -p "$MC2_DIR"
   for repo in "${REPOS[@]}"; do
     dest="$MC2_DIR/$repo"
@@ -1011,7 +1031,7 @@ run_member_bootstrap() {
     echo ""
     echo "Then 'virtualize --doctor' should be all green, and a service starts with:"
     echo ""
-    echo "  virtualize -p mc2-gateway --start      # or --ide, so the IDE inherits its configuration"
+    echo "  virtualize -p mc2-gateway --start      # or the Run button its IDE config calls"
   fi
   echo ""
   echo "Open a project in the IDE you prefer: --setup writes run configurations for"
