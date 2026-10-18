@@ -17,7 +17,8 @@ cd mc2-bootstrap && ./bootstrap.sh
 Asks what you'll be working on, shows **one list** of every tool that answer needs and
 this Mac lacks, and installs all of it on one yes — through Homebrew, which it installs
 first if missing. Then it generates an SSH key if you have none and walks you through
-adding it to GitHub, clones the repos into `~/Work/mc2`, and symlinks the CLIs. A
+adding it to GitHub, ignores `.DS_Store` machine-wide (`~/.config/git/ignore`, so no
+repo needs the entry), clones the repos into `~/Work/mc2`, and symlinks the CLIs. A
 frontend checkout finishes with `virtualize --setup` and `virtualize --doctor` run for
 you; a backend one ends with the three commands that need Docker's Kubernetes on.
 
@@ -38,6 +39,8 @@ The tools, and why each is on the list:
 | everyone | `tailscale-app` (cask) | the dev tier answers only on the tailnet |
 | everyone | `gitleaks`, `shellcheck`, `shfmt`, `yamlfmt` | the git hooks run them, and skip any that is missing — silently |
 | frontend | `node`, `pnpm` | the Nuxt apps; `packageManager` pins pnpm's version. `virtualize -p mc2-ui --install` adds Chromium for its browser tests |
+| frontend | `mkcert`, `nss` | the trusted certificate a frontend on the dev tier is served with (`https://platform-local.mc2-dev.com:3001`); `nss` lets Firefox trust it |
+| frontend, no backend | `kubectl`, `yq` | read a frontend's tier settings from mc2-k8s (`kubectl kustomize`, no cluster) |
 | Python or Rust | `taplo` | formats `pyproject.toml` and `Cargo.toml` |
 | Python | `uv` | the toolchain; installs the interpreter each repo asks for |
 | Rust | rustup (from rustup.rs), `cargo-deny`, `cargo-machete`, `cargo-watch` | the toolchain each repo pins; the advisory check CI fails on; unused dependencies; hot reload |

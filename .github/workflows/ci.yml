@@ -1,8 +1,8 @@
 name: CI
 
 # One script, but the one that provisions a developer machine and the production server,
-# where a typo is discovered on a fresh box. The pre-push hook runs the same checks and is
-# skippable; this is the binding half.
+# where a typo is discovered on a fresh box. shfmt, shellcheck and bash -n run in
+# format.yml; this is what only this repo checks.
 
 on:
   pull_request:
@@ -25,32 +25,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install yamlfmt
-        # GOPATH/bin is not on PATH for later steps; $GITHUB_PATH is what adds it.
-        run: |
-          go install github.com/google/yamlfmt/cmd/yamlfmt@v0.21.0
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      - name: yamlfmt
-        run: yamlfmt -lint '**/*.yaml' '**/*.yml'
-
-      - name: Install shfmt
-        # Pinned to the version brew ships, so a laptop and CI agree on "formatted".
-        run: |
-          go install mvdan.cc/sh/v3/cmd/shfmt@v3.14.1
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      - name: shfmt
-        # -d, never -w: CI reports, it does not rewrite. Not -kp, which turns a split
-        # case branch into a staircase.
-        run: shfmt -i 2 -ci -bn -d bootstrap.sh
-
-      - name: shellcheck
-        run: shellcheck --severity=warning bootstrap.sh
-
-      - name: bash syntax
-        run: bash -n bootstrap.sh
-
       # The first thing anyone runs on a bare machine, where `set -eu` plus an unset
       # variable in the usage path would be a silent exit 1.
       - name: help runs on a bare machine
