@@ -44,7 +44,7 @@ The tools, and why each is on the list:
 | Python or Rust | `taplo` | formats `pyproject.toml` and `Cargo.toml` |
 | Python | `uv` | the toolchain; installs the interpreter each repo asks for |
 | Rust | rustup (from rustup.rs), `cargo-deny`, `cargo-machete`, `cargo-watch` | the toolchain each repo pins; the advisory check CI fails on; unused dependencies; hot reload |
-| backend | `docker-desktop` (cask), `kubectl`, `helm`, `yq`, `infisical`, `argo`, `argocd`, `hl` | the local cluster, its settings and credentials, the pipeline, readable logs |
+| backend | `docker-desktop` (cask), `kubectl`, `helm`, `yq`, `infisical`, `argo`, `argocd`, `hl`, `stripe` | the local cluster, its settings and credentials, the pipeline, readable logs, Stripe's test events forwarded to mc2-webhooks |
 
 No IDE is installed: `virtualize --setup` writes run configurations for JetBrains and
 VS Code alike, so the choice stays yours. Two steps stay manual because no script can

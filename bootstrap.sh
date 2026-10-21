@@ -145,7 +145,7 @@ run_with_spinner() {
 # Empty repos: selectable, never ticked by default, since cloning one gets a bare dir.
 repo_note() {
   case "$1" in
-    mc2-webhooks | mc2-realtime) echo " — placeholder, not started" ;;
+    mc2-realtime) echo " — placeholder, not started" ;;
     *) echo "" ;;
   esac
 }
@@ -618,7 +618,7 @@ run_member_bootstrap() {
   BASE_REPOS=(mc2-wrappers mc2-k8s)
   FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
   # mc2-rust is not optional, the Rust services declare it as a path dependency.
-  BACKEND_REPOS=(mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-platform-api mc2-mailer-api mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
+  BACKEND_REPOS=(mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-platform-api mc2-mailer-api mc2-webhooks mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
 
   ROLE="everything"
   case "$_role" in
@@ -743,6 +743,8 @@ run_member_bootstrap() {
     want argo 'brew "argo"' "reads the build pipeline"
     want argocd 'brew "argocd"' "reads what is deployed"
     want hl 'brew "hl"' "renders the services' JSON logs readably"
+    # Its own tap, like infisical.
+    want stripe $'tap "stripe/stripe-cli"\nbrew "stripe/stripe-cli/stripe"' "forwards Stripe's test events to mc2-webhooks on this Mac"
   fi
   # Neither has a formula: the rustup formula is keg-only and ships no rustup-init.
   NEEDS_RUSTUP=false
