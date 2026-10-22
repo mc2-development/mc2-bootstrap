@@ -5,7 +5,7 @@ mod frontend;
 use std::{io::IsTerminal, process::ExitCode};
 
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 use backend::{
     models::{Check, Machine, REPOS, Role, Setup, github::OWNER, repo},
@@ -13,39 +13,32 @@ use backend::{
 };
 use frontend::Selection;
 
+// Its own binary, not `mc2`: it runs before mc2-wrappers exists, and the two would overwrite each other.
+/// Set up this machine for mc2. Anything not given as a flag is asked for.
 #[derive(Parser)]
-#[command(version, about = "The mc2 platform, from one command")]
+#[command(name = "mc2-bootstrap", version)]
 struct Cli {
-    #[command(subcommand)]
-    cmd: Cmd,
-}
-
-#[derive(Subcommand)]
-enum Cmd {
-    /// Set up this machine for mc2. Anything not given as a flag is asked for.
-    Bootstrap {
-        /// What this machine is. Default: detected (a headless Linux box run as root is a server).
-        #[arg(long, value_enum)]
-        mode: Option<Setup>,
-        /// Developer: a preset, the repositories and the tools they need.
-        #[arg(long, value_enum, conflicts_with = "repos")]
-        role: Option<Role>,
-        /// Developer: the repositories to clone instead of a preset, comma-separated.
-        #[arg(long, value_delimiter = ',')]
-        repos: Option<Vec<String>>,
-        /// Server: the public IP, when the detected one is wrong.
-        #[arg(long)]
-        ip: Option<String>,
-    },
+    /// What this machine is. Default: detected (a headless Linux box run as root is a server).
+    #[arg(long, value_enum)]
+    mode: Option<Setup>,
+    /// Developer: a preset, the repositories and the tools they need.
+    #[arg(long, value_enum, conflicts_with = "repos")]
+    role: Option<Role>,
+    /// Developer: the repositories to clone instead of a preset, comma-separated.
+    #[arg(long, value_delimiter = ',')]
+    repos: Option<Vec<String>>,
+    /// Server: the public IP, when the detected one is wrong.
+    #[arg(long)]
+    ip: Option<String>,
 }
 
 fn main() -> Result<ExitCode> {
-    let Cmd::Bootstrap {
+    let Cli {
         mode,
         role,
         repos,
         ip,
-    } = Cli::parse().cmd;
+    } = Cli::parse();
     let machine = detect::machine()?;
     let checks = server::checks(&machine, ip.clone(), None);
     let terminal = std::io::stdout().is_terminal();

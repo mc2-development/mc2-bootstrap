@@ -1006,7 +1006,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mc2"
+name = "mc2-bootstrap"
 version = "0.1.0"
 dependencies = [
  "anyhow",

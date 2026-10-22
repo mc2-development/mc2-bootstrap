@@ -22,7 +22,7 @@ const CLIENT_ID: Option<&str> = None;
 const SCOPE: &str = "write:public_key";
 
 // The default name, so ssh finds it with no ~/.ssh/config. A machine with a work and a
-// personal account has one key each: MC2_SSH_KEY=~/.ssh/id_work mc2 bootstrap
+// personal account has one key each: MC2_SSH_KEY=~/.ssh/id_work mc2-bootstrap
 pub fn ssh_key() -> Option<PathBuf> {
     let home = system::home()?;
     Some(match system::var("MC2_SSH_KEY") {
