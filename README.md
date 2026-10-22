@@ -1,13 +1,94 @@
 # mc2-bootstrap
 
-One script, two modes.
+Prepares a machine for mc2: a developer machine (tools, repositories, CLIs) or the
+k3s server. Two implementations live here while one replaces the other:
+
+| | |
+|---|---|
+| `mc2 bootstrap` | The Rust CLI, a full-screen wizard for macOS, Linux and Windows. **In progress** |
+| `bootstrap.sh` | The bash script it replaces. Still the one that installs anything, and the one Terraform runs |
+
+This repo is public so a fresh machine can fetch it without credentials. **Nothing
+secret may ever be added to it.**
+
+## `mc2 bootstrap`
+
+```bash
+cargo run -- bootstrap            # the wizard
+cargo run -- bootstrap --help     # every flag
+```
+
+No release binaries yet; each target will be built on its own OS's runner.
+
+### What works today
+
+| | |
+|---|---|
+| Detecting the machine | OS and version, architecture, hostname, admin, desktop or headless, package manager, cloned repositories, installed tools |
+| Developer and server setup | Suggested from the machine: only a headless Linux box run as root is taken for a server |
+| GitHub sign-in | SSH key, the account it signs in as, and whether that account reaches `mc2-development` |
+| The plan | Which repositories would be cloned and which tools are missing, and why each is needed |
+| Server checks | The guards `bootstrap.sh --server` refuses on |
+
+**Nothing is installed, cloned or changed yet.** Starting prints the plan and stops;
+running it is the next step.
+
+### Developer setup
+
+It opens on the GitHub sign-in, since every repository is private. `s` signs in with
+GitHub's device flow: a code to enter at `github.com/login/device`, after which the key
+is created if missing and added to the account. The token is dropped afterwards. This
+needs the mc2 OAuth App's client ID in `src/backend/services/github.rs`, which is not
+registered yet.
+
+Then a role, or the repositories ticked by hand. The tools follow the repositories, never
+the role name:
+
+| Role | Repositories |
+|---|---|
+| Frontend | Base + Frontend |
+| Backend | Base + Backend |
+| DevOps | Base + Infra |
+| Everything | all but the placeholders |
+| Choose repositories | whatever is ticked; already-cloned ones stay ticked |
+
+| Group | Repositories |
+|---|---|
+| Base | `mc2-wrappers`, `mc2-k8s` |
+| Frontend | `mc2-ui` and the three apps |
+| Backend | the APIs, `mc2-gateway`, `mc2-core`, `mc2-keycloak`, `mc2-python`, `mc2-rust`, `mc2-webhooks` |
+| Infra | `mc2-terraform`, `mc2-actions`, `mc2-bootstrap` |
+| Not started | `mc2-realtime` |
+
+Each tool is tagged in the wizard with what brought it in (`frontend`, `rust`,
+`cluster`, `infra`, …). `MC2_SSH_KEY` points at a key other than `~/.ssh/id_ed25519`.
+
+### Server setup
+
+Locked behind the server passphrase, unless `MC2_SERVER_PASSPHRASE` already matches.
+It reads the same variables as `bootstrap.sh --server` and shows each check with its
+fix. With no terminal it prints the checks and exits non-zero if any fails. `--ip`
+overrides the detected public IP.
+
+### Layout
+
+```
+src/frontend/   the wizard: app, layouts, pages, components, composables, stores
+src/backend/    models, services (what to do), clients (the OS, GitHub's API)
+```
+
+`?` opens the keymap.
+
+## `bootstrap.sh`
+
+One script, two modes, until `mc2 bootstrap` covers both.
 
 | | |
 |---|---|
 | `--member` (default) | Developer Mac setup — clones the repos, symlinks `kube`/`virtualize` |
 | `--server` | Installs k3s on a fresh Linux box. Needs no repos and no checkout |
 
-## Member mode
+### Member mode
 
 ```bash
 git clone https://github.com/mc2-development/mc2-bootstrap.git
@@ -44,7 +125,7 @@ The tools, and why each is on the list:
 | Python or Rust | `taplo` | formats `pyproject.toml` and `Cargo.toml` |
 | Python | `uv` | the toolchain; installs the interpreter each repo asks for |
 | Rust | rustup (from rustup.rs), `cargo-deny`, `cargo-machete`, `cargo-watch` | the toolchain each repo pins; the advisory check CI fails on; unused dependencies; hot reload |
-| backend | `docker-desktop` (cask), `kubectl`, `helm`, `yq`, `infisical`, `argo`, `argocd`, `hl` | the local cluster, its settings and credentials, the pipeline, readable logs |
+| backend | `docker-desktop` (cask), `kubectl`, `helm`, `yq`, `infisical`, `argo`, `argocd`, `hl`, `stripe` | the local cluster, its settings and credentials, the pipeline, readable logs, Stripe's test events forwarded to mc2-webhooks |
 
 No IDE is installed: `virtualize --setup` writes run configurations for JetBrains and
 VS Code alike, so the choice stays yours. Two steps stay manual because no script can
@@ -78,7 +159,7 @@ mc2 --reboot
 virtualize --setup
 ```
 
-## Server mode
+### Server mode
 
 Installs k3s on a fresh Linux box. Needs no repos and no checkout.
 
@@ -119,7 +200,7 @@ ssh root@<TAILNET_IP> 'MC2_SERVER_PASSPHRASE=... MC2_CONFIRM_HOSTNAME=$(hostname
 Guards either way: refuses non-Linux, refuses non-root, requires the shared passphrase
 (an accident guard, not a security control), and the hostname named in advance.
 
-### What it does
+#### What it does
 
 **Tailscale first, before k3s.** The ordering is load-bearing in both directions: k3s
 bakes its API certificate at install time and the tailnet address can only enter as a
@@ -152,7 +233,7 @@ It disables `ufw` when `MC2_DISABLE_UFW=1` and refuses otherwise: ufw filters fl
 VXLAN and the pod/service CIDRs and breaks networking in ways that look like application
 bugs.
 
-### Afterwards
+#### Afterwards
 
 The kubeconfig lands at `/root/mc2-server.kubeconfig` with context `mc2-server` — named
 for the role, not the vendor, because the previous `mc2-hetzner` pair turned a provider
