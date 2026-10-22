@@ -67,7 +67,7 @@ Everything is tee'd to /var/log/mc2-bootstrap.log.
 
   MC2_SERVER_PASSPHRASE=...   The accident guard.
   MC2_CONFIRM_HOSTNAME=...    Must equal `hostname`: names the target in advance.
-  MC2_TS_AUTHKEY=...          Pre-authorized, tagged, single-use (mc2 --tailnet key server).
+  MC2_TS_AUTHKEY=...          Pre-authorized, tagged, single-use (mc2 ops --tailnet key server).
   MC2_TS_LOGIN_SERVER=...     The headscale URL the key belongs to.
   MC2_DISABLE_UFW=1           Required only when ufw is active: it breaks pod networking.
 EOF
@@ -417,7 +417,7 @@ run_server_bootstrap() {
     else
       echo "Refusing: MC2_TS_AUTHKEY is not set."
       echo "  Without a key 'tailscale up' blocks on a browser URL nobody is watching."
-      echo "  Terraform mints one; by hand: mc2 --tailnet key server"
+      echo "  Terraform mints one; by hand: mc2 ops --tailnet key server"
       exit 1
     fi
   fi
@@ -814,7 +814,7 @@ run_member_bootstrap() {
     echo "             Log in -> the ⋯ menu -> 'Use custom coordination server' ->"
     echo "             $MC2_LOGIN_SERVER"
     echo "          2. The app shows a URL ending /register/<id>. Send that id to an"
-    echo "             admin, who runs:  mc2 --tailnet register <id> <user>"
+    echo "             admin, who runs:  mc2 ops --tailnet register <id> <user>"
     echo "        Verify with:  tailscale status"
     echo ""
   fi
@@ -929,52 +929,32 @@ run_member_bootstrap() {
   done
   echo ""
 
-  # core.hooksPath at one committed directory, so updating a hook is a git pull.
-  if [[ -x "$MC2_DIR/mc2-wrappers/bin/virtualize" ]]; then
-    # Both zsh and fish: the login shell on macOS is zsh, but a terminal here may open
-    # fish, and a completion missing from the shell in use reads as one that is broken.
-    echo "      Installing git hooks and tab-completions (zsh and fish)"
-    "$MC2_DIR/mc2-wrappers/bin/virtualize" --install-shell 2>&1 | sed 's/^/      /'
+  echo "[5/5] Installing mc2"
+  # One Rust binary for every tool, built once into ~/.cargo/bin rather than on every run.
+  MC2_BIN="${CARGO_HOME:-$HOME/.cargo}/bin/mc2"
+  if [[ ! -f "$MC2_DIR/mc2-wrappers/Cargo.toml" ]]; then
+    echo "      ! mc2-wrappers was not cloned: 'mc2' will not exist until it is cloned and this"
+    echo "        script re-run."
+  elif ! command -v cargo >/dev/null 2>&1; then
+    echo "      ! mc2 is a Rust CLI and cargo is not installed. Install Rust from rustup.rs, then:"
+    echo "        cargo install --locked --path $MC2_DIR/mc2-wrappers"
   else
-    echo "      ! mc2-wrappers not cloned — no git hooks or completions installed."
-    echo "        After cloning it: virtualize --install-shell"
+    run_with_spinner "mc2 (cargo install)" cargo install --locked --quiet --path "$MC2_DIR/mc2-wrappers"
+    echo "        into ~/.cargo/bin; re-run after pulling mc2-wrappers to update it"
   fi
   echo ""
 
-  echo "[5/5] Linking CLI tools"
-  NEED_LINK=false
-  [[ "$(readlink /usr/local/bin/kube 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/bin/kube" ]] && NEED_LINK=true
-  [[ "$(readlink /usr/local/bin/virtualize 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/bin/virtualize" ]] && NEED_LINK=true
-  [[ "$(readlink /usr/local/bin/flow 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/bin/flow" ]] && NEED_LINK=true
-  [[ "$(readlink /usr/local/bin/mc2 2>/dev/null)" != "$MC2_DIR/mc2-wrappers/bin/mc2" ]] && NEED_LINK=true
-
-  # A custom selection can leave mc2-wrappers unticked; linking anyway dangles.
-  if [[ ! -d "$MC2_DIR/mc2-wrappers" ]]; then
-    NEED_LINK=false
-    echo "      ! mc2-wrappers was not cloned — skipping. 'kube', 'virtualize', 'flow' and 'mc2' will"
-    echo "        not exist until you clone it and re-run this script."
-  fi
-
-  if [[ "$NEED_LINK" == true ]]; then
-    sudo ln -sf "$MC2_DIR/mc2-wrappers/bin/kube" /usr/local/bin/kube
-    sudo ln -sf "$MC2_DIR/mc2-wrappers/bin/virtualize" /usr/local/bin/virtualize
-    sudo ln -sf "$MC2_DIR/mc2-wrappers/bin/flow" /usr/local/bin/flow
-    sudo ln -sf "$MC2_DIR/mc2-wrappers/bin/mc2" /usr/local/bin/mc2
-    echo "      ✓ kube, virtualize, flow and mc2 linked into /usr/local/bin"
-  else
-    echo "      ✓ kube, virtualize, flow and mc2 already correctly linked"
-  fi
-  echo ""
-
-  # Docker Desktop's ClusterIPs are unreachable from the host, unlike dev and prod where
-  # the node advertises the service CIDR. The agent keeps that tunnel up across reboots.
-  if [[ -x "$MC2_DIR/mc2-wrappers/bin/virtualize" ]]; then
-    if launchctl print "gui/$UID/com.mc2.fwd.local" >/dev/null 2>&1; then
-      echo "      ✓ local forwards already running as a launchd agent"
-    else
-      "$MC2_DIR/mc2-wrappers/bin/virtualize" --fwd install >/dev/null 2>&1 \
-        && echo "      ✓ local forwards installed (starts at login; virtualize --fwd)" \
-        || echo "      ! could not install the local forward agent — run: virtualize --fwd install"
+  if [[ -x "$MC2_BIN" ]]; then
+    # Git hooks, tab completion for every shell, and the old bash commands' links removed.
+    echo "      Installing git hooks and tab completion"
+    "$MC2_BIN" virtualize --install-shell 2>&1 | sed 's/^/      /'
+    echo ""
+    # Docker Desktop's ClusterIPs are unreachable from the host, unlike dev and prod where
+    # the node advertises the service CIDR. The agent keeps that tunnel up across reboots.
+    if [[ "$NEEDS_CLUSTER" == true ]]; then
+      "$MC2_BIN" virtualize --fwd install >/dev/null 2>&1 \
+        && echo "      ✓ local forwards installed (starts at login; mc2 virtualize --fwd)" \
+        || echo "      ! could not install the local forward agent: mc2 virtualize --fwd install"
     fi
   fi
   echo ""
@@ -998,12 +978,11 @@ run_member_bootstrap() {
 
   echo "--------------------"
   # Keyed on what was cloned, not the preset: advice that cannot work is worse than none.
-  _virt="$MC2_DIR/mc2-wrappers/bin/virtualize"
   if [[ "$NEEDS_CLUSTER" == false ]]; then
     # Nothing here depends on a cluster, so the rest is done rather than described.
-    if [[ -x "$_virt" ]]; then
-      "$_virt" --setup
-      "$_virt" --doctor || true
+    if [[ -x "$MC2_BIN" ]]; then
+      "$MC2_BIN" virtualize --setup
+      "$MC2_BIN" virtualize --doctor || true
     fi
     _example_app="mc2-platform-frontend"
     _example_port=":3001"
@@ -1021,19 +1000,21 @@ run_member_bootstrap() {
     done
     echo "You're set up. Start an app against the deployed dev tier:"
     echo ""
-    echo "  virtualize -p $_example_app --start   # $_example_port"
+    echo "  mc2 virtualize -p $_example_app --start   # $_example_port"
   else
     echo "You're set up. These bring the local cluster up — they need Docker"
     echo "Desktop's Kubernetes switched on and the tailnet joined:"
     echo ""
-    echo "  mc2 --install            # one-time: Traefik and the secrets operator"
-    echo "  mc2 --secrets"
-    echo "  mc2 --reboot"
-    echo "  virtualize --setup       # dependencies, IDE run configs, forwards"
+    echo "  mc2 ops --install            # one-time: Traefik and the secrets operator"
+    echo "  mc2 ops --secrets"
+    echo "  mc2 ops --reboot"
+    echo "  mc2 virtualize --setup       # dependencies, IDE run configs, forwards"
     echo ""
-    echo "Then 'virtualize --doctor' should be all green, and a service starts with:"
+    echo "Then 'mc2 virtualize --doctor' should be all green, and a service starts with:"
     echo ""
-    echo "  virtualize -p mc2-gateway --start      # or the Run button its IDE config calls"
+    echo "  mc2 virtualize -p mc2-gateway --start      # or the Run button its IDE config calls"
+    echo ""
+    echo "Or just 'mc2' for the interactive app."
   fi
   echo ""
   echo "Open a project in the IDE you prefer: --setup writes run configurations for"

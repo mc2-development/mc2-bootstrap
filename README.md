@@ -5,18 +5,21 @@ k3s server. Two implementations live here while one replaces the other:
 
 | | |
 |---|---|
-| `mc2 bootstrap` | The Rust CLI, a full-screen wizard for macOS, Linux and Windows. **In progress** |
+| `mc2-bootstrap` | The Rust CLI, a full-screen wizard for macOS, Linux and Windows. **In progress** |
 | `bootstrap.sh` | The bash script it replaces. Still the one that installs anything, and the one Terraform runs |
 
 This repo is public so a fresh machine can fetch it without credentials. **Nothing
 secret may ever be added to it.**
 
-## `mc2 bootstrap`
+## `mc2-bootstrap`
 
 ```bash
-cargo run -- bootstrap            # the wizard
-cargo run -- bootstrap --help     # every flag
+cargo run                # the wizard
+cargo run -- --help      # every flag
 ```
+
+A binary of its own rather than `mc2 bootstrap`: it runs before mc2-wrappers is cloned,
+and `mc2`, the daily CLI, is mc2-wrappers' own binary.
 
 No release binaries yet; each target will be built on its own OS's runner.
 
@@ -81,7 +84,7 @@ src/backend/    models, services (what to do), clients (the OS, GitHub's API)
 
 ## `bootstrap.sh`
 
-One script, two modes, until `mc2 bootstrap` covers both.
+One script, two modes, until `mc2-bootstrap` covers both.
 
 | | |
 |---|---|

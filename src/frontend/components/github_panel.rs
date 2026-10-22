@@ -72,7 +72,7 @@ pub fn lines(github: Option<&GitHub>) -> Vec<Line<'static>> {
             "'{user}' cannot see {OWNER}: ask for an invite, or use"
         )));
         out.push(hint(
-            "the other key: MC2_SSH_KEY=~/.ssh/id_work mc2 bootstrap".into(),
+            "the other key: MC2_SSH_KEY=~/.ssh/id_work mc2-bootstrap".into(),
         ));
     }
     out
