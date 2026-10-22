@@ -1,6 +1,7 @@
 name: Format
 
-# The steps live in mc2-development/mc2-actions; this file says what is checked here.
+# A copy of mc2-actions' format.yml, cut to what this repo checks: a public repo cannot call
+# a reusable workflow from a private one, and mc2-actions stays private.
 
 on:
   pull_request:
@@ -15,8 +16,45 @@ permissions: {}
 
 jobs:
   format:
-    uses: mc2-development/mc2-actions/.github/workflows/format.yml@main
+    # The name a called workflow reported, which the ruleset in mc2-terraform requires.
+    name: format / format
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
-    with:
-      shell: bootstrap.sh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned to the versions brew ships, so a laptop and CI agree on "formatted".
+      - name: Install yamlfmt and shfmt
+        run: |
+          go install github.com/google/yamlfmt/cmd/yamlfmt@v0.21.0
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.14.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # Checked against the release's published sha256, so a replaced asset fails here.
+      - name: Install actionlint
+        run: |
+          curl -fsSL -o actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          sudo mv actionlint /usr/local/bin/actionlint
+          rm actionlint.tar.gz
+
+      # A glob, not '.': doublestar mode rejects a directory argument.
+      - name: yamlfmt
+        run: yamlfmt -lint '**/*.yaml' '**/*.yml'
+
+      - name: actionlint
+        run: actionlint
+
+      # -d, never -w: CI reports, it does not rewrite. bash -n beside shellcheck: shellcheck
+      # may read a bash script as sh from its shebang and pass what bash refuses.
+      - name: bootstrap.sh
+        run: |
+          shfmt -i 2 -ci -bn -d bootstrap.sh
+          shellcheck --severity=warning bootstrap.sh
+          bash -n bootstrap.sh
