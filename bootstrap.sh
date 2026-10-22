@@ -653,7 +653,7 @@ run_member_bootstrap() {
   for repo in "${REPOS[@]}"; do
     case "$repo" in
       mc2-operation-api | mc2-accounting-api | mc2-agent-api | mc2-crons | mc2-python) NEEDS_PYTHON=true ;;
-      mc2-gateway | mc2-account-api | mc2-platform-api | mc2-mailer-api | mc2-core) NEEDS_RUST=true ;;
+      mc2-gateway | mc2-account-api | mc2-platform-api | mc2-mailer-api | mc2-webhooks | mc2-core | mc2-rust) NEEDS_RUST=true ;;
       mc2-ui | mc2-operation-frontend | mc2-accounting-frontend | mc2-platform-frontend) NEEDS_NODE=true ;;
     esac
   done
@@ -748,7 +748,8 @@ run_member_bootstrap() {
   fi
   # Neither has a formula: the rustup formula is keg-only and ships no rustup-init.
   NEEDS_RUSTUP=false
-  if [[ "$NEEDS_RUST" == true ]] && ! command -v cargo >/dev/null 2>&1; then
+  # Every role, not only backend: mc2 itself is built with cargo.
+  if ! command -v cargo >/dev/null 2>&1; then
     NEEDS_RUSTUP=true
     WANT_NAMES+=(rust)
     WANT_WHY+=("the Rust toolchain, from rustup.rs; each repo pins its version")
