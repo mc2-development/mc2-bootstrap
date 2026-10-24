@@ -732,6 +732,7 @@ run_member_bootstrap() {
   if [[ "$NEEDS_RUST" == true ]]; then
     want cargo-deny 'brew "cargo-deny"' "pre-push: the advisory and licence check CI fails on"
     want watchexec 'brew "watchexec"' "hot reload for the Rust services"
+    want sqruff 'brew "sqruff"' "pre-commit: formats the SQL migrations"
   fi
   if [[ "$NEEDS_CLUSTER" == true ]]; then
     want docker 'cask "docker-desktop"' "runs the local cluster"

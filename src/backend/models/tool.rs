@@ -129,6 +129,11 @@ pub const TOOLS: &[Tool] = &[
     ),
     tool("watchexec", "hot reload for the Rust services", Need::Rust),
     tool(
+        "sqruff",
+        "pre-commit: formats the SQL migrations",
+        Need::Rust,
+    ),
+    tool(
         "make",
         "builds the Keycloak theme, providers and image",
         Need::Java,
