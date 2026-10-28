@@ -74,6 +74,9 @@ const TERRAFORM: Option<Toolchain> = Some(Toolchain::Terraform);
 pub const REPOS: &[Repo] = &[
     repo("mc2-wrappers", Group::Base, None),
     repo("mc2-k8s", Group::Base, None),
+    // The agent's house rules, and each developer's agent memory: every machine runs an agent.
+    repo("mc2-skills", Group::Base, None),
+    repo("mc2-memory", Group::Base, None),
     repo("mc2-ui", Group::Frontend, NODE),
     repo("mc2-operation-frontend", Group::Frontend, NODE),
     repo("mc2-accounting-frontend", Group::Frontend, NODE),

@@ -24,7 +24,7 @@ fn row(ok: Option<bool>, label: &str, value: String) -> Line<'static> {
     ])
 }
 
-fn hint(text: String) -> Line<'static> {
+fn hint(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         format!("      {text}"),
         Style::new().fg(YELLOW),
@@ -46,9 +46,7 @@ pub fn lines(github: Option<&GitHub>) -> Vec<Line<'static>> {
             .map_or_else(|| "none yet".to_string(), tilde),
     )];
     if gh.key.is_none() {
-        out.push(hint(
-            "the sign-in creates one and adds it to the account".into(),
-        ));
+        out.push(hint("the sign-in creates one and adds it to the account"));
     }
     out.push(row(
         Some(gh.ssh_user.is_some()),
@@ -68,11 +66,11 @@ pub fn lines(github: Option<&GitHub>) -> Vec<Line<'static>> {
         .into(),
     ));
     if let (Some(user), false) = (&gh.ssh_user, gh.org_access) {
-        out.push(hint(format!(
+        out.push(hint(&format!(
             "'{user}' cannot see {OWNER}: ask for an invite, or use"
         )));
         out.push(hint(
-            "the other key: MC2_SSH_KEY=~/.ssh/id_work mc2-bootstrap".into(),
+            "the other key: MC2_SSH_KEY=~/.ssh/id_work mc2-bootstrap",
         ));
     }
     out

@@ -31,6 +31,17 @@ impl Role {
             Role::Custom => "whatever is ticked; the tools follow the ticks",
         }
     }
+
+    // What `mc2 agent --role` records for the coding agent; ticked repositories name no role.
+    pub fn agent_role(self) -> Option<&'static str> {
+        match self {
+            Role::Frontend => Some("frontend"),
+            Role::Backend => Some("backend"),
+            Role::Devops => Some("devops"),
+            Role::Everything => Some("fullstack"),
+            Role::Custom => None,
+        }
+    }
 }
 
 impl fmt::Display for Role {

@@ -32,9 +32,35 @@ No release binaries yet; each target will be built on its own OS's runner.
 | GitHub sign-in | SSH key, the account it signs in as, and whether that account reaches `mc2-development` |
 | The plan | Which repositories would be cloned and which tools are missing, and why each is needed |
 | Server checks | The guards `bootstrap.sh --server` refuses on |
+| Developer run | Installs the tools, clones the repositories, builds `mc2`, sets the machine and the agent up |
 
-**Nothing is installed, cloned or changed yet.** Starting prints the plan and stops;
-running it is the next step.
+The server half still only checks: installing k3s is `bootstrap.sh --server`.
+
+### Running the developer setup
+
+Start in the wizard, or `--role`/`--repos` with one confirmation (`--yes` skips it), runs seven
+steps on the terminal. Each skips what is already done, so running again resumes after a
+failure:
+
+1. The package manager: Homebrew on macOS and Linux (after Linux's compilers, from apt, dnf or
+   pacman), Scoop on Windows, with Git, the Visual Studio C++ build tools when Rust is needed,
+   and a check for Developer Mode.
+2. The tools the repositories need, each from the source in `src/backend/models/package.rs`:
+   formulas and casks, Scoop apps and buckets, winget for Windows apps, `cargo install` for
+   what no package manager carries, rustup.rs for Rust. Then every tool is checked again.
+3. GitHub: the SSH key, created when missing, and access to `mc2-development`.
+4. The clones into `~/Work/mc2`.
+5. `mc2`, built from mc2-wrappers into `~/.cargo/bin`.
+6. `mc2 virtualize --install-shell`, then `--fwd install` on a cluster machine or `--setup`
+   on a frontend one.
+7. `mc2 agent --role`, `--memory-link <GitHub login>` and `--skills`.
+
+What no program can do is listed at the end: joining the tailnet, Infisical's login, Docker
+Desktop's Kubernetes, Developer Mode, Docker Desktop on Linux.
+
+Every package name was checked against its registry: several obvious ones install another
+program (`hl` on crates.io, `yq` in older apt) or do not exist (`kubectl` in Homebrew is
+`kubernetes-cli`).
 
 ### Developer setup
 
@@ -55,9 +81,13 @@ the role name:
 | Everything | all but the placeholders |
 | Choose repositories | whatever is ticked; already-cloned ones stay ticked |
 
+The role is also what `mc2 agent --role` records for the coding agent: Frontend, Backend and
+DevOps as themselves, Everything as `fullstack`; ticked repositories name none, so the person
+picks one.
+
 | Group | Repositories |
 |---|---|
-| Base | `mc2-wrappers`, `mc2-k8s` |
+| Base | `mc2-wrappers`, `mc2-k8s`, `mc2-skills` (the agent's house rules), `mc2-memory` (each developer's agent memory) |
 | Frontend | `mc2-ui` and the three apps |
 | Backend | the APIs, `mc2-gateway`, `mc2-core`, `mc2-keycloak`, `mc2-python`, `mc2-rust`, `mc2-webhooks` |
 | Infra | `mc2-terraform`, `mc2-actions`, `mc2-bootstrap` |
