@@ -98,8 +98,12 @@ fn the_logo_sweeps_over_the_sign_in() {
         t.backend().buffer().clone()
     };
     let (first, later) = (frame(10), frame(30));
-    let text =
-        |b: &ratatui::buffer::Buffer| b.content().iter().map(|c| c.symbol()).collect::<String>();
+    let text = |b: &ratatui::buffer::Buffer| {
+        b.content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>()
+    };
     assert!(text(&first).contains("░█████████████"), "the logo is drawn");
     assert_eq!(text(&first), text(&later), "the same letters");
     assert_ne!(first, later, "in other colours: it moves");
@@ -210,7 +214,7 @@ fn screen(app: &Wizard) -> String {
         .buffer()
         .content()
         .iter()
-        .map(|c| c.symbol())
+        .map(ratatui::buffer::Cell::symbol)
         .collect()
 }
 
@@ -582,4 +586,55 @@ fn panes_braces_and_search() {
     assert!(matches!(a.rows[a.cursor], Row::Start));
     keys(&mut a, "gg");
     assert!(matches!(a.rows[a.cursor], Row::Setup(Setup::Developer)));
+}
+
+#[test]
+fn every_tool_the_plan_can_ask_for_has_a_source_on_every_os() {
+    use crate::backend::{models::package::source, services::plan::plan};
+
+    for os in [Os::Mac, Os::Linux, Os::Windows] {
+        let everything = plan(Role::Everything, REPOS.iter().collect(), os);
+        for tool in everything.tools {
+            assert!(
+                source(tool.name, os).is_some(),
+                "{} has no source on {os}",
+                tool.name
+            );
+        }
+    }
+}
+
+#[test]
+fn a_name_that_installs_another_program_is_never_used() {
+    use crate::backend::models::{Source, package::source};
+
+    // Homebrew calls it kubernetes-cli; crates.io's `hl` and Scoop's lookalikes are not these tools.
+    assert_eq!(
+        source("kubectl", Os::Mac),
+        Some(Source::Brew {
+            formula: "kubernetes-cli",
+            tap: None
+        })
+    );
+    assert_eq!(
+        source("hl", Os::Windows),
+        Some(Source::Scoop {
+            app: "hl",
+            bucket: None
+        })
+    );
+    for os in [Os::Mac, Os::Linux, Os::Windows] {
+        assert_ne!(source("hl", os), Some(Source::Cargo("hl")));
+    }
+    assert!(matches!(
+        source("terraform", Os::Linux),
+        Some(Source::Brew {
+            tap: Some("hashicorp/tap"),
+            ..
+        })
+    ));
+    assert_eq!(
+        source("docker", Os::Windows),
+        Some(Source::Winget("Docker.DockerDesktop"))
+    );
 }

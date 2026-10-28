@@ -2,14 +2,17 @@
 mod backend;
 mod frontend;
 
-use std::{io::IsTerminal, process::ExitCode};
+use std::{
+    io::{IsTerminal, Write},
+    process::ExitCode,
+};
 
 use anyhow::{Result, bail};
 use clap::Parser;
 
 use backend::{
     models::{Check, Machine, REPOS, Role, Setup, github::OWNER, repo},
-    services::{detect, github, plan::plan, server},
+    services::{detect, github, install, plan::plan, server},
 };
 use frontend::Selection;
 
@@ -30,6 +33,32 @@ struct Cli {
     /// Server: the public IP, when the detected one is wrong.
     #[arg(long)]
     ip: Option<String>,
+    /// Developer: run the plan without asking first.
+    #[arg(long)]
+    yes: bool,
+}
+
+// The run's progress on this terminal, and Enter read from it.
+struct Terminal;
+
+impl install::Io for Terminal {
+    fn say(&mut self, line: String) {
+        println!("{line}");
+    }
+
+    fn pause(&mut self, prompt: &str) {
+        print!("{prompt} ");
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stdin().read_line(&mut String::new());
+    }
+}
+
+fn confirmed(question: &str) -> bool {
+    print!("{question} [Y/n] ");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    let _ = std::io::stdin().read_line(&mut answer);
+    !matches!(answer.trim(), "n" | "N" | "no")
 }
 
 fn main() -> Result<ExitCode> {
@@ -38,6 +67,7 @@ fn main() -> Result<ExitCode> {
         role,
         repos,
         ip,
+        yes,
     } = Cli::parse();
     let machine = detect::machine()?;
     let checks = server::checks(&machine, ip.clone(), None);
@@ -56,23 +86,55 @@ fn main() -> Result<ExitCode> {
         }
         _ => None,
     };
-    let sel = match given {
-        Some(sel) => sel,
+    // Pressing Start in the wizard is the confirmation; flags ask once, unless --yes.
+    let (sel, asked) = match given {
+        Some(sel) => (sel, yes),
         None if !terminal => bail!("not a terminal: pass --role or --repos"),
         None => match frontend::run(machine, checks, Selection::new(setup, Role::Everything))? {
-            Some(sel) => sel,
+            Some(sel) => (sel, true),
             None => return Ok(ExitCode::SUCCESS),
         },
     };
     // The wizard owned what it was handed; detecting again is cheap.
     let machine = detect::machine()?;
     Ok(match sel.setup {
-        Setup::Developer => developer(&machine, &sel),
+        Setup::Developer => {
+            developer(&machine, &sel);
+            let go = asked || (terminal && confirmed("\nInstall and clone all of this now?"));
+            if go {
+                run_setup(&machine, &sel)
+            } else {
+                println!("\nNothing was installed or cloned. --yes runs it without asking.");
+                ExitCode::SUCCESS
+            }
+        }
         Setup::Server => server_report(&server::checks(&machine, ip, sel.passphrase.as_deref())),
     })
 }
 
-fn developer(machine: &Machine, sel: &Selection) -> ExitCode {
+fn run_setup(machine: &Machine, sel: &Selection) -> ExitCode {
+    let plan = plan(sel.role, sel.repos(machine), machine.os);
+    println!();
+    match install::run(machine, &plan, &mut Terminal) {
+        Ok(by_hand) => {
+            println!("\n✓ This machine is set up.");
+            if !by_hand.is_empty() {
+                println!("\nLeft for you, in this order:");
+                for (i, step) in by_hand.iter().enumerate() {
+                    println!("  {}. {step}", i + 1);
+                }
+            }
+            println!("\nThen: mc2 virtualize --doctor, and `mc2` for the app.");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            println!("\n✗ {e:#}\n\nRunning mc2-bootstrap again picks up where this stopped.");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn developer(machine: &Machine, sel: &Selection) {
     let plan = plan(sel.role, sel.repos(machine), machine.os);
     println!("{} on {}\n", plan.role, machine.os);
     let missing = plan.missing(machine);
@@ -113,8 +175,18 @@ fn developer(machine: &Machine, sel: &Selection) -> ExitCode {
     for r in to_clone {
         println!("    {:<26} {}", r.name, r.group.title());
     }
-    println!("\nNothing was installed or cloned: running the setup is the next step to build.");
-    ExitCode::SUCCESS
+    match sel.role.agent_role() {
+        Some(role) => println!(
+            "\n  The coding agent\n    mc2 agent --role {role}   what it treats as this developer's, read at every start"
+        ),
+        None => println!(
+            "\n  The coding agent\n    mc2 agent --role <frontend|backend|devops|fullstack>   ticked repositories name no role"
+        ),
+    }
+    println!(
+        "    mc2 agent --memory-link {}   its memory kept in mc2-memory, under this name",
+        gh.ssh_user.as_deref().unwrap_or("<your-github-login>")
+    );
 }
 
 // A refusal is what someone reads the provider's console for, so every check is printed.

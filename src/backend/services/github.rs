@@ -49,7 +49,7 @@ fn ssh_options(key: &Path) -> Vec<String> {
         "ConnectTimeout=5",
     ]
     .iter()
-    .map(|s| s.to_string())
+    .map(ToString::to_string)
     .collect()
 }
 
@@ -81,15 +81,26 @@ fn ssh_user(key: &Path) -> Option<String> {
     rest.split('!').next().map(str::to_string)
 }
 
-fn reaches_org(key: &Path) -> bool {
-    let ssh = format!(
+// What git runs as ssh, so a clone uses this key and never prompts.
+pub fn git_ssh_command(key: &Path) -> String {
+    format!(
         "ssh {}",
         ssh_options(key)
             .iter()
             .map(|o| format!("\"{o}\""))
             .collect::<Vec<_>>()
             .join(" ")
-    );
+    )
+}
+
+pub fn public_key(key: &Path) -> Option<String> {
+    let mut path = key.as_os_str().to_owned();
+    path.push(".pub");
+    system::read(&path).map(|k| k.trim().to_string())
+}
+
+fn reaches_org(key: &Path) -> bool {
+    let ssh = git_ssh_command(key);
     let url = format!("git@github.com:{OWNER}/mc2-wrappers.git");
     system::output(
         "git",
@@ -140,14 +151,12 @@ fn run_sign_in(hostname: &str, report: &impl Fn(SignIn)) -> Result<String> {
         create_key(&key, &format!("{login}@{hostname}"))?;
     }
     report(SignIn::Step("adding the key to the account"));
-    let mut public_path = key.clone().into_os_string();
-    public_path.push(".pub");
-    let public = system::read(&public_path).context("the SSH key has no .pub beside it")?;
-    github_api::add_ssh_key(&token, &format!("mc2 · {hostname}"), public.trim())?;
+    let public = public_key(&key).context("the SSH key has no .pub beside it")?;
+    github_api::add_ssh_key(&token, &format!("mc2 · {hostname}"), &public)?;
     Ok(login)
 }
 
-fn create_key(key: &Path, comment: &str) -> Result<()> {
+pub fn create_key(key: &Path, comment: &str) -> Result<()> {
     if let Some(dir) = key.parent() {
         system::make_dir(dir)?;
     }

@@ -11,3 +11,17 @@ ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
 sha2 = "0.11.1"
 ureq = { version = "3.5.0", features = ["json"] }
+
+[lints.clippy]
+redundant_clone = "warn"
+implicit_clone = "warn"
+assigning_clones = "warn"
+cloned_instead_of_copied = "warn"
+needless_pass_by_value = "warn"
+clone_on_ref_ptr = "warn"
+unused_async = "warn"
+future_not_send = "warn"
+needless_pass_by_ref_mut = "warn"
+ref_option = "warn"
+redundant_closure_for_method_calls = "warn"
+match_wildcard_for_single_variants = "warn"
