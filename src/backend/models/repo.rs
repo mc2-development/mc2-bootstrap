@@ -90,6 +90,7 @@ pub const REPOS: &[Repo] = &[
     repo("mc2-mailer-api", Group::Backend, RUST),
     repo("mc2-webhooks", Group::Backend, RUST),
     repo("mc2-payments-api", Group::Backend, RUST),
+    repo("mc2-activity-api", Group::Backend, RUST),
     repo("mc2-crons", Group::Backend, RUST),
     repo("mc2-keycloak", Group::Backend, JAVA),
     repo("mc2-operation-api", Group::Backend, PYTHON),
