@@ -5,18 +5,10 @@ pub enum Group {
     Backend,
     // The machine, DNS, GitHub, the shared workflows and this CLI: DevOps and "everything".
     Infra,
-    // An empty repo holding only a README: selectable, never ticked by a preset.
-    Placeholder,
 }
 
 impl Group {
-    pub const ALL: [Group; 5] = [
-        Group::Base,
-        Group::Frontend,
-        Group::Backend,
-        Group::Infra,
-        Group::Placeholder,
-    ];
+    pub const ALL: [Group; 4] = [Group::Base, Group::Frontend, Group::Backend, Group::Infra];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -24,7 +16,6 @@ impl Group {
             Group::Frontend => "Frontend",
             Group::Backend => "Backend",
             Group::Infra => "Infra",
-            Group::Placeholder => "Not started",
         }
     }
 
@@ -34,7 +25,6 @@ impl Group {
             Group::Frontend => "the three apps and the shared UI",
             Group::Backend => "APIs, gateway, Keycloak, shared libraries",
             Group::Infra => "server, DNS, GitHub, shared CI, this CLI",
-            Group::Placeholder => "a README only, until something needs it",
         }
     }
 }
@@ -91,6 +81,7 @@ pub const REPOS: &[Repo] = &[
     repo("mc2-webhooks", Group::Backend, RUST),
     repo("mc2-payments-api", Group::Backend, RUST),
     repo("mc2-activity-api", Group::Backend, RUST),
+    repo("mc2-realtime", Group::Backend, RUST),
     repo("mc2-crons", Group::Backend, RUST),
     repo("mc2-keycloak", Group::Backend, JAVA),
     repo("mc2-operation-api", Group::Backend, PYTHON),
@@ -99,7 +90,6 @@ pub const REPOS: &[Repo] = &[
     repo("mc2-terraform", Group::Infra, TERRAFORM),
     repo("mc2-actions", Group::Infra, None),
     repo("mc2-bootstrap", Group::Infra, RUST),
-    repo("mc2-realtime", Group::Placeholder, None),
 ];
 
 pub fn find(name: &str) -> Option<&'static Repo> {

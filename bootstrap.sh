@@ -12,7 +12,7 @@ GITHUB_OWNER="${GITHUB_OWNER:-mc2-development}"
 
 WORK_DIR="$HOME/Work"
 MC2_DIR="$WORK_DIR/mc2"
-REPOS=(mc2-wrappers mc2-k8s mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-platform-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-webhooks mc2-realtime mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
+REPOS=(mc2-wrappers mc2-k8s mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-platform-api mc2-crons mc2-operation-api mc2-accounting-api mc2-agent-api mc2-mailer-api mc2-webhooks mc2-payments-api mc2-activity-api mc2-realtime mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend mc2-ui)
 
 # The default name, so ssh finds it with no ~/.ssh/config. Overridable, because a Mac
 # with a work and a personal GitHub account has one key each and the default name is
@@ -142,14 +142,6 @@ run_with_spinner() {
   rm -f "$log"
 }
 
-# Empty repos: selectable, never ticked by default, since cloning one gets a bare dir.
-repo_note() {
-  case "$1" in
-    mc2-realtime) echo " — placeholder, not started" ;;
-    *) echo "" ;;
-  esac
-}
-
 # Arrow-key menu; already-cloned repos are locked on. Result in $CHECKED_ITEMS.
 checkbox_menu() {
   set +e
@@ -159,7 +151,7 @@ checkbox_menu() {
   local i cur key key2
 
   for ((i = 0; i < n; i++)); do
-    if [[ -n "$(repo_note "${items[i]}")" ]]; then checked[i]=0; else checked[i]=1; fi
+    checked[i]=1
     if [[ -d "$MC2_DIR/${items[i]}" ]]; then locked[i]=1; else locked[i]=0; fi
   done
 
@@ -179,12 +171,10 @@ checkbox_menu() {
       fi
       local mark=" "
       [[ ${checked[i]} -eq 1 ]] && mark="x"
-      local note
-      note="$(repo_note "${items[i]}")"
       if [[ $i -eq $cur ]]; then
-        printf "\r\033[K  > [%s] %s\033[2m%s\033[0m\n" "$mark" "${items[i]}" "$note"
+        printf "\r\033[K  > [%s] %s\n" "$mark" "${items[i]}"
       else
-        printf "\r\033[K    [%s] %s\033[2m%s\033[0m\n" "$mark" "${items[i]}" "$note"
+        printf "\r\033[K    [%s] %s\n" "$mark" "${items[i]}"
       fi
     done
   }
@@ -618,7 +608,7 @@ run_member_bootstrap() {
   BASE_REPOS=(mc2-wrappers mc2-k8s)
   FRONTEND_REPOS=(mc2-ui mc2-operation-frontend mc2-accounting-frontend mc2-platform-frontend)
   # mc2-rust is not optional, the Rust services declare it as a path dependency.
-  BACKEND_REPOS=(mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-platform-api mc2-mailer-api mc2-webhooks mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
+  BACKEND_REPOS=(mc2-core mc2-python mc2-rust mc2-gateway mc2-account-api mc2-platform-api mc2-mailer-api mc2-webhooks mc2-payments-api mc2-activity-api mc2-realtime mc2-operation-api mc2-accounting-api mc2-agent-api mc2-crons)
 
   ROLE="everything"
   case "$_role" in
@@ -653,7 +643,7 @@ run_member_bootstrap() {
   for repo in "${REPOS[@]}"; do
     case "$repo" in
       mc2-operation-api | mc2-accounting-api | mc2-agent-api | mc2-crons | mc2-python) NEEDS_PYTHON=true ;;
-      mc2-gateway | mc2-account-api | mc2-platform-api | mc2-mailer-api | mc2-webhooks | mc2-core | mc2-rust) NEEDS_RUST=true ;;
+      mc2-gateway | mc2-account-api | mc2-platform-api | mc2-mailer-api | mc2-webhooks | mc2-payments-api | mc2-activity-api | mc2-realtime | mc2-core | mc2-rust) NEEDS_RUST=true ;;
       mc2-ui | mc2-operation-frontend | mc2-accounting-frontend | mc2-platform-frontend) NEEDS_NODE=true ;;
     esac
   done

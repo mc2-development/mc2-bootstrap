@@ -359,9 +359,16 @@ fn infra_explains_itself() {
 }
 
 #[test]
-fn placeholders_are_never_in_a_preset() {
+fn everything_clones_every_repository() {
     let a = app(Role::Everything);
-    assert!(!a.plan().repos.iter().any(|r| r.name == "mc2-realtime"));
+    let plan = a.plan();
+    for repo in REPOS {
+        assert!(
+            plan.repos.iter().any(|r| r.name == repo.name),
+            "{} belongs to a group, so the everything preset clones it",
+            repo.name
+        );
+    }
 }
 
 #[test]
