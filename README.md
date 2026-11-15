@@ -78,7 +78,7 @@ the role name:
 | Frontend | Base + Frontend |
 | Backend | Base + Backend |
 | DevOps | Base + Infra |
-| Everything | all but the placeholders |
+| Everything | all of them |
 | Choose repositories | whatever is ticked; already-cloned ones stay ticked |
 
 The role is also what `mc2 agent --role` records for the coding agent: Frontend, Backend and
@@ -89,9 +89,8 @@ picks one.
 |---|---|
 | Base | `mc2-wrappers`, `mc2-k8s`, `mc2-skills` (the agent's house rules), `mc2-memory` (each developer's agent memory) |
 | Frontend | `mc2-ui` and the three apps |
-| Backend | the APIs, `mc2-gateway`, `mc2-core`, `mc2-keycloak`, `mc2-python`, `mc2-rust`, `mc2-webhooks` |
+| Backend | the APIs, `mc2-gateway`, `mc2-core`, `mc2-keycloak`, `mc2-python`, `mc2-rust`, `mc2-webhooks`, `mc2-realtime` |
 | Infra | `mc2-terraform`, `mc2-actions`, `mc2-bootstrap` |
-| Not started | `mc2-realtime` |
 
 Each tool is tagged in the wizard with what brought it in (`frontend`, `rust`,
 `cluster`, `infra`, …). `MC2_SSH_KEY` points at a key other than `~/.ssh/id_ed25519`.
@@ -180,9 +179,7 @@ services, resolved through uv rather than a path.
 
 Frontend is deliberately the lighter path: those repos run against the deployed dev
 tier, so that checkout needs no Docker, no kubectl and no kubeconfig — but it does
-need tailscale, precisely *because* it runs against the deployed tier. `mc2-webhooks` and
-`mc2-realtime` are shown but unticked — each is an empty repo holding only a README that
-records its boundary, until something pulls on it.
+need tailscale, precisely *because* it runs against the deployed tier.
 
 Doesn't touch the cluster. Afterwards (backend/everything), with Docker's Kubernetes on:
 

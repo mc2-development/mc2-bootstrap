@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::{
-    backend::models::{Group, Os, Setup},
+    backend::models::{Os, Setup},
     frontend::{
         stores::wizard::Wizard,
         theme::{CYAN, GREEN, RED, pane_border},
@@ -73,8 +73,6 @@ fn row_line(w: &Wizard, row: &Row) -> Line<'static> {
             let mut line = Line::from(vec![mark(on, ("[x] ", "[ ] ")), Span::raw(r.name)]);
             if w.machine.is_cloned(r) {
                 line.push_span(note("  · cloned"));
-            } else if r.group == Group::Placeholder {
-                line.push_span(note("  · placeholder"));
             }
             line
         }
